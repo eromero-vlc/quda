@@ -116,6 +116,9 @@ set(QUDA_MAGMA OFF CACHE BOOL "build magma interface")
 #ARPACK
 set(QUDA_ARPACK OFF CACHE BOOL "build arpack interface")
 
+#PRIMME
+set(QUDA_PRIMME OFF CACHE BOOL "build primme interface")
+
 # Interface options
 set(QUDA_INTERFACE_QDP ON CACHE BOOL "build qdp interface")
 set(QUDA_INTERFACE_MILC ON CACHE BOOL "build milc interface")
@@ -133,6 +136,7 @@ set(QUDA_QIOHOME "" CACHE PATH "path to QIO")
 set(QUDA_QMPHOME "" CACHE PATH "path to QMP")
 set(QUDA_LIMEHOME "" CACHE PATH "path to LIME")
 set(QUDA_ARPACK_HOME "" CACHE PATH "path to arpack / parpack")
+set(QUDA_PRIMME_HOME "" CACHE PATH "path to primme")
 set(QUDA_MAGMAHOME "" CACHE PATH "path to MAGMA, if not set, pkg-config will be attempted")
 set(QUDA_MAGMA_LIBS "" CACHE STRING "additional linker flags required to link against magma")
 
@@ -469,12 +473,16 @@ endif()
 if(QUDA_MAGMA)
   add_definitions(-DMAGMA_LIB -DADD_ -DMAGMA_SETAFFINITY -DGPUSHMEM=300 -DHAVE_CUBLAS -DMAGMA_LIB)
   find_package(OpenMP)
+  find_package(BLAS REQUIRED)
+  find_package(LAPACK REQUIRED)
   if("${QUDA_MAGMAHOME}" STREQUAL "")
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(MAGMA magma)
     include_directories(SYSTEM ${MAGMA_INCLUDEDIR})
     message("${MAGMA_INCLUDEDIR}")
     find_library(MAGMA ${MAGMA_LIBRARIES} PATH ${MAGMA_LIBRARY_DIRS})
+    LIST(APPEND MAGMA ${BLAS_LIBRARIES})
+    LIST(APPEND MAGMA ${LAPACK_LIBRARIES})
   else()
     # prefer static library
     find_library(MAGMA libmagma.a magma ${QUDA_MAGMAHOME}/lib/)
@@ -485,7 +493,10 @@ if(QUDA_MAGMA)
     # and any additional OpenMP linker flags
     SET( CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_CXX_FLAGS}" )
     include_directories(SYSTEM ${QUDA_MAGMAHOME}/include)
-  endif()  
+    # add blas/lapack
+    LIST(APPEND MAGMA ${BLAS_LIBRARIES})
+    LIST(APPEND MAGMA ${LAPACK_LIBRARIES})
+  endif()
 endif(QUDA_MAGMA)
 
 # This selects arpack or parpack for Multi GPU
@@ -519,6 +530,25 @@ if(QUDA_ARPACK)
   endif()
   
 endif(QUDA_ARPACK)
+
+if(QUDA_PRIMME)
+  add_definitions(-DPRIMME_LIB)
+  find_package(BLAS REQUIRED)
+  find_package(LAPACK REQUIRED)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(PRIMME QUIET primme)
+  if(NOT PRIMME_FOUND OR QUDA_PRIMME_HOME)
+    find_library(PRIMME primme PATH ${QUDA_PRIMME_HOME}/lib)
+  else()
+    find_library(PRIMME ${PRIMME_LIBRARIES} PATH ${PRIMME_LIBRARY_DIRS})
+  endif()
+  include_directories(SYSTEM ${QUDA_PRIMME_HOME}/include)
+  LIST(APPEND MAGMA ${BLAS_LIBRARIES})
+  LIST(APPEND MAGMA ${LAPACK_LIBRARIES})
+  
+endif(QUDA_PRIMME)
+
+
 
 # set which precisions to enable
 add_definitions(-DQUDA_PRECISION=${QUDA_PRECISION})

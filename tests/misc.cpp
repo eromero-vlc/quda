@@ -1012,6 +1012,8 @@ QudaEigType get_eig_type(char *s)
     ret = QUDA_EIG_IR_LANCZOS;
   } else if (strcmp(s, "iram") == 0) {
     ret = QUDA_EIG_IR_ARNOLDI;
+  } else if (strcmp(s, "primme") == 0) {
+    ret = QUDA_EIG_PRIMME;
   } else {
     fprintf(stderr, "Error: invalid quda eigensolver type\n");
     exit(1);

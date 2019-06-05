@@ -2455,10 +2455,9 @@ void eigensolveQuda(void *host_evecs, void *host_evals, QudaEigParam *eig_param)
   // Create device side ColorSpinorField vector space and to pass to the
   // compute function.
   const int *X = cudaGauge->X();
-  ColorSpinorParam cpuParam(&host_evecs, *inv_param, X, inv_param->solution_type, inv_param->input_location);
+  ColorSpinorParam cpuParam(host_evecs, *inv_param, X, inv_param->solution_type, inv_param->input_location);
 
   // Copy any initial guess in resident in host array
-  cpuParam.v = host_evecs;
   ColorSpinorParam cudaParam(cpuParam);
   cudaParam.location = QUDA_CUDA_FIELD_LOCATION;
   cudaParam.create = QUDA_ZERO_FIELD_CREATE;
@@ -2524,7 +2523,7 @@ void eigensolveQuda(void *host_evecs, void *host_evals, QudaEigParam *eig_param)
     if (inv_param->cpu_prec == QUDA_DOUBLE_PRECISION) {
       for (int i = 0; i < eig_param->nConv; i++) {
         ((complex<double> *)host_evals)[i] = evals[i];
-	cpuParam.v = ((char*)host_evecs)[i*cpuParam.Precision()*2*kSpace[i]->Volume()*kSpace[i]->Ncolor()*kSpace[i]->Nspin()];
+	cpuParam.v = &((char*)host_evecs)[i*cpuParam.Precision()*2*kSpace[i]->Volume()*kSpace[i]->Ncolor()*kSpace[i]->Nspin()];
 	std::vector<ColorSpinorField *> host_vec;
         host_vec.push_back(ColorSpinorField::Create(cpuParam));
         blas::copy(*host_vec[0], *kSpace[i]);
@@ -2532,7 +2531,7 @@ void eigensolveQuda(void *host_evecs, void *host_evals, QudaEigParam *eig_param)
     } else {
       for (int i = 0; i < eig_param->nConv; i++) {
         ((complex<float> *)host_evals)[i] = evals[i];
-	cpuParam.v = ((char*)host_evecs)[i*cpuParam.Precision()*2*kSpace[i]->Volume()*kSpace[i]->Ncolor()*kSpace[i]->Nspin()];
+	cpuParam.v = &((char*)host_evecs)[i*cpuParam.Precision()*2*kSpace[i]->Volume()*kSpace[i]->Ncolor()*kSpace[i]->Nspin()];
         std::vector<ColorSpinorField *> host_vec;
         host_vec.push_back(ColorSpinorField::Create(cpuParam));
         blas::copy(*host_vec[0], *kSpace[i]);

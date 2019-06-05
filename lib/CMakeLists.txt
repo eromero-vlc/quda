@@ -2,7 +2,7 @@
 set (QUDA_OBJS
   dirac_coarse.cpp dslash_coarse.cu coarse_op.cu coarsecoarse_op.cu
   coarse_op_preconditioned.cu
-  eigensolve_quda.cpp quda_arpack_interface.cpp
+  eigensolve_quda.cpp quda_arpack_interface.cpp quda_primme_interface.cpp
   multigrid.cpp transfer.cpp block_orthogonalize.cu inv_bicgstab_quda.cpp
   prolongator.cu restrictor.cu gauge_phase.cu timer.cpp malloc.cpp
   solver.cpp inv_bicgstab_quda.cpp inv_cg_quda.cpp inv_bicgstabl_quda.cpp
@@ -196,6 +196,9 @@ if(QUDA_ARPACK)
   endif()
 endif()
 
+if(QUDA_PRIMME)
+  target_link_libraries(quda PRIVATE ${PRIMME})
+endif()
 
 if(QUDA_NVML)
   target_link_libraries(quda PRIVATE ${NVML_LIBRARY})

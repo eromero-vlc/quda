@@ -204,8 +204,10 @@ namespace quda {
 
   void CG::constructDeflationSpace()
   {
+    profile.TPSTOP(QUDA_PROFILE_INIT);
     // Deflation requested + first instance of solver
     eig_solve = EigenSolver::create(&param.eig_param, mat, profile);
+    profile.TPSTART(QUDA_PROFILE_INIT);
 
     // Clone from an existing vector
     ColorSpinorParam csParam(*rp);
@@ -221,7 +223,9 @@ namespace quda {
     param.evals.resize(param.eig_param.nEv);
     for (int i = 0; i < param.eig_param.nEv; i++) param.evals[i] = 0.0;
 
+    profile.TPSTOP(QUDA_PROFILE_INIT);
     (*eig_solve)(param.evecs, param.evals);
+    profile.TPSTART(QUDA_PROFILE_INIT);
 
     deflate_init = true;
   }
@@ -439,7 +443,8 @@ namespace quda {
 
     // this means when using heavy quarks we will switch to simple hq restarts as soon as the reliable strategy fails
     const int hqmaxresIncrease = param.max_hq_res_increase;
-    const int hqmaxresRestartTotal = param.max_hq_res_restart_total; // this limits the number of heavy quark restarts we can do
+    const int hqmaxresRestartTotal
+      = param.max_hq_res_restart_total; // this limits the number of heavy quark restarts we can do
 
     int resIncrease = 0;
     int resIncreaseTotal = 0;
@@ -620,8 +625,7 @@ namespace quda {
           pnorm = 0;//pnorm + alpha * sqrt(norm2(p));
           if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("New dinit: %e (r %e , y %e)\n",dinit,uhigh*sqrt(r2),uhigh*Anorm*sqrt(blas::norm2(y)));
           d_new = dinit;
-        }
-        else{
+        } else {
           rNorm = sqrt(r2);
           maxrr = rNorm;
           maxrx = rNorm;
@@ -634,8 +638,9 @@ namespace quda {
         if (sqrt(r2) > r0Norm && updateX and not L2breakdown) { // reuse r0Norm for this
           resIncrease++;
           resIncreaseTotal++;
-          warningQuda("CG: new reliable residual norm %e is greater than previous reliable residual norm %e (total #inc %i)",
-                      sqrt(r2), r0Norm, resIncreaseTotal);
+          warningQuda(
+            "CG: new reliable residual norm %e is greater than previous reliable residual norm %e (total #inc %i)",
+            sqrt(r2), r0Norm, resIncreaseTotal);
           if (resIncrease > maxResIncrease or resIncreaseTotal > maxResIncreaseTotal or r2 < stop) {
             if (use_heavy_quark_res) {
               L2breakdown = true;
@@ -652,11 +657,12 @@ namespace quda {
         if (use_heavy_quark_res and L2breakdown) {
           hqresRestartTotal++; // count the number of heavy quark restarts we've done
           delta = 0;
-          warningQuda("CG: Restarting without reliable updates for heavy-quark residual (total #inc %i)", hqresRestartTotal);
+          warningQuda("CG: Restarting without reliable updates for heavy-quark residual (total #inc %i)",
+                      hqresRestartTotal);
           heavy_quark_restart = true;
 
           if (heavy_quark_res > heavy_quark_res_old) { // check if new hq residual is greater than previous
-            hqresIncrease++; // count the number of consecutive increases
+            hqresIncrease++;                           // count the number of consecutive increases
             warningQuda("CG: new reliable HQ residual norm %e is greater than previous reliable residual norm %e",
                         heavy_quark_res, heavy_quark_res_old);
             // break out if we do not improve here anymore

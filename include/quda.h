@@ -404,6 +404,9 @@ extern "C" {
     /** Performs an MdagM solve, then constructs the left and right SVD. **/
     QudaBoolean compute_svd;
 
+    /** If true, the solver will error out if the convergence criteria are not met **/
+    QudaBoolean require_convergence;
+
     /** Which part of the spectrum to solve **/
     QudaEigSpectrumType spectrum;
 
@@ -490,6 +493,9 @@ extern "C" {
 
     /** Precision to store the null-space vectors in (post block orthogonalization) */
     QudaPrecision precision_null[QUDA_MAX_MG_LEVEL];
+
+    /** Number of times to repeat Gram-Schmidt in block orthogonalization */
+    int n_block_ortho[QUDA_MAX_MG_LEVEL];
 
     /** Verbosity on each level of the multigrid */
     QudaVerbosity verbosity[QUDA_MAX_MG_LEVEL];
@@ -877,11 +883,11 @@ extern "C" {
    * Perform the eigensolve. The problem matrix is defined by the invert param, the
    * mode of solution is specified by the eig param. It is assumed that the gauge
    * field has already been loaded via  loadGaugeQuda().
-   * @param h_els  Host side eigenvalues
-   * @param h_evs  Host side eigenvectors
-   * @param param  Contains all metadata regarding the type of solve.
+   * @param h_evecs  Array of pointers to application eigenvectors
+   * @param h_evals  Host side eigenvalues
+   * @param param Contains all metadata regarding the type of solve.
    */
-  void eigensolveQuda(void *h_evals, void *h_evecs, QudaEigParam *param);
+  void eigensolveQuda(void **h_evecs, double_complex *h_evals, QudaEigParam *param);
 
   /**
    * Perform the solve, according to the parameters set in param.  It
@@ -1245,6 +1251,18 @@ extern "C" {
    * Calculates the topological charge from gaugeSmeared, if it exist, or from gaugePrecise if no smeared fields are present.
    */
   double qChargeQuda();
+
+  /**
+   * Public function to perform color contractions of the host spinors x and y.
+   * @param[in] x pointer to host data
+   * @param[in] y pointer to host data
+   * @param[out] result pointer to the 16 spin projections per lattice site
+   * @param[in] cType Which type of contraction (open, degrand-rossi, etc)
+   * @param[in] param meta data for construction of ColorSpinorFields.
+   * @param[in] X spacetime data for construction of ColorSpinorFields.
+   */
+  void contractQuda(const void *x, const void *y, void *result, const QudaContractType cType, QudaInvertParam *param,
+                    const int *X);
 
   /**
      @brief Calculates the topological charge from gaugeSmeared, if it exist,

@@ -57,6 +57,7 @@ extern bool generate_nullspace;
 extern bool generate_all_levels;
 extern int nu_pre[QUDA_MAX_MG_LEVEL];
 extern int nu_post[QUDA_MAX_MG_LEVEL];
+extern int n_block_ortho[QUDA_MAX_MG_LEVEL];
 extern QudaSolveType coarse_solve_type[QUDA_MAX_MG_LEVEL]; // type of solve to use in the smoothing on each level
 extern QudaSolveType smoother_solve_type[QUDA_MAX_MG_LEVEL]; // type of solve to use in the smoothing on each level
 extern int geo_block_size[QUDA_MAX_MG_LEVEL][QUDA_MAX_DIM];
@@ -120,6 +121,7 @@ extern bool oblique_proj_check;
 extern bool mg_eig[QUDA_MAX_MG_LEVEL];
 extern int mg_eig_nEv[QUDA_MAX_MG_LEVEL];
 extern int mg_eig_nKr[QUDA_MAX_MG_LEVEL];
+extern bool mg_eig_require_convergence[QUDA_MAX_MG_LEVEL];
 extern int mg_eig_check_interval[QUDA_MAX_MG_LEVEL];
 extern int mg_eig_max_restarts[QUDA_MAX_MG_LEVEL];
 extern double mg_eig_tol[QUDA_MAX_MG_LEVEL];
@@ -169,6 +171,7 @@ display_test_info()
       printfQuda(" - level %d size of eigenvector search space %d\n", i + 1, mg_eig_nEv[i]);
       printfQuda(" - level %d size of Krylov space %d\n", i + 1, mg_eig_nKr[i]);
       printfQuda(" - level %d solver tolerance %e\n", i + 1, mg_eig_tol[i]);
+      printfQuda(" - level %d convergence required (%s)\n", i + 1, mg_eig_require_convergence[i] ? "true" : "false");
       printfQuda(" - level %d Operator: daggered (%s) , norm-op (%s)\n", i + 1, mg_eig_use_dagger[i] ? "true" : "false",
                  mg_eig_use_normop[i] ? "true" : "false");
       if (mg_eig_use_poly_acc[i]) {
@@ -242,6 +245,7 @@ void setEigParam(QudaEigParam &mg_eig_param, int level)
   mg_eig_param.nEv = mg_eig_nEv[level];
   mg_eig_param.nKr = mg_eig_nKr[level];
   mg_eig_param.nConv = nvec[level];
+  mg_eig_param.require_convergence = mg_eig_require_convergence[level] ? QUDA_BOOLEAN_YES : QUDA_BOOLEAN_NO;
 
   mg_eig_param.tol = mg_eig_tol[level];
   mg_eig_param.check_interval = mg_eig_check_interval[level];
@@ -351,6 +355,7 @@ void setMultigridParam(QudaMultigridParam &mg_param)
 
     mg_param.spin_block_size[i] = 1;
     mg_param.n_vec[i] = nvec[i] == 0 ? 24 : nvec[i]; // default to 24 vectors if not set
+    mg_param.n_block_ortho[i] = n_block_ortho[i];    // number of times to Gram-Schmidt
     mg_param.precision_null[i] = prec_null; // precision to store the null-space basis
     mg_param.smoother_halo_precision[i] = smoother_halo_prec; // precision of the halo exchange in the smoother
     mg_param.nu_pre[i] = nu_pre[i];
@@ -621,10 +626,12 @@ int main(int argc, char **argv)
     setup_location[i] = QUDA_CUDA_FIELD_LOCATION;
     nu_pre[i] = 2;
     nu_post[i] = 2;
+    n_block_ortho[i] = 1;
 
     // Default eigensolver params
     mg_eig[i] = false;
     mg_eig_tol[i] = 1e-3;
+    mg_eig_require_convergence[i] = QUDA_BOOLEAN_YES;
     mg_eig_type[i] = QUDA_EIG_TR_LANCZOS;
     mg_eig_spectrum[i] = QUDA_SPECTRUM_SR_EIG;
     mg_eig_check_interval[i] = 5;

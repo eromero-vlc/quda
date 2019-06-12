@@ -56,7 +56,10 @@ extern int niter;
 extern int gcrNkrylov; // number of inner iterations for GCR, or l for BiCGstab-l
 extern int pipeline;   // length of pipeline for fused operations in GCR or BiCGstab-l
 
+extern QudaVerbosity verbosity;
+
 extern QudaMatPCType matpc_type;
+extern QudaSolutionType solution_type;
 extern QudaSolveType solve_type;
 
 // Twisted mass flavor type
@@ -70,6 +73,7 @@ extern bool compute_clover;
 extern int eig_nEv;
 extern int eig_nKr;
 extern int eig_nConv;
+extern bool eig_require_convergence;
 extern int eig_check_interval;
 extern int eig_max_restarts;
 extern double eig_tol;
@@ -112,6 +116,7 @@ void display_test_info()
   printfQuda(" - size of eigenvector search space %d\n", eig_nEv);
   printfQuda(" - size of Krylov space %d\n", eig_nKr);
   printfQuda(" - solver tolerance %e\n", eig_tol);
+  printfQuda(" - convergence required (%s)\n", eig_require_convergence ? "true" : "false");
   if (eig_compute_svd) {
     printfQuda(" - Operator: MdagM. Will compute SVD of M\n");
     printfQuda(" - ***********************************************************\n");
@@ -133,7 +138,7 @@ void display_test_info()
   return;
 }
 
-QudaPrecision &cpu_prec = prec;
+QudaPrecision cpu_prec = QUDA_DOUBLE_PRECISION;
 QudaPrecision &cuda_prec = prec;
 QudaPrecision &cuda_prec_sloppy = prec_sloppy;
 QudaPrecision &cuda_prec_precondition = prec_precondition;
@@ -245,13 +250,12 @@ void setInvertParam(QudaInvertParam &inv_param)
   inv_param.dagger = QUDA_DAG_NO;
   inv_param.mass_normalization = QUDA_MASS_NORMALIZATION;
 
-  // No Even-Odd PC for the moment...
-  inv_param.solution_type = QUDA_MAT_SOLUTION;
+  inv_param.solution_type = solution_type;
   inv_param.solve_type = (inv_param.solution_type == QUDA_MAT_SOLUTION ? QUDA_DIRECT_SOLVE : QUDA_DIRECT_PC_SOLVE);
 
   inv_param.matpc_type = matpc_type;
   inv_param.inv_type = QUDA_GCR_INVERTER;
-  inv_param.verbosity = QUDA_VERBOSE;
+  inv_param.verbosity = verbosity;
   inv_param.inv_type_precondition = QUDA_MG_INVERTER;
   inv_param.tol = tol;
 
@@ -293,12 +297,14 @@ void setEigParam(QudaEigParam &eig_param)
   if (eig_nConv < 0) {
     eig_param.nConv = eig_nEv;
     eig_nConv = eig_nEv;
-  } else
+  } else {
     eig_param.nConv = eig_nConv;
+  }
 
   eig_param.nEv = eig_nEv;
   eig_param.nKr = eig_nKr;
   eig_param.tol = eig_tol;
+  eig_param.require_convergence = eig_require_convergence ? QUDA_BOOLEAN_YES : QUDA_BOOLEAN_NO;
   eig_param.check_interval = eig_check_interval;
   eig_param.max_restarts = eig_max_restarts;
   eig_param.cuda_prec_ritz = cuda_prec;
@@ -424,32 +430,11 @@ int main(int argc, char **argv)
   //----------------------------------------------------------------------------
 
   // Host side arrays to store the eigenpairs computed by QUDA
-  void *host_evecs;
-  void *host_evals;
-
-  // If we use the QUDA routine, we only need pass enough memory
-  // for nEv vectors. If we use the ARPACK routine, we must
-  // pass enough workspave for the full nKr array.
-  int evecs_needed = eig_param.arpack_check ? eig_nKr : eig_nConv;
-
-  // Memory allocation
-  if (eig_inv_param.cpu_prec == QUDA_SINGLE_PRECISION) {
-    host_evecs = (void *)malloc(V * eig_inv_param.Ls * sss * evecs_needed * sizeof(float));
-    host_evals = (void *)malloc(2 * eig_param.nEv * sizeof(float));
-  } else {
-    host_evecs = (void *)malloc(V * eig_inv_param.Ls * sss * evecs_needed * sizeof(double));
-    host_evals = (void *)malloc(2 * eig_param.nEv * sizeof(double));
+  void **host_evecs = (void **)malloc(eig_nConv * sizeof(void *));
+  for (int i = 0; i < eig_nConv; i++) {
+    host_evecs[i] = (void *)malloc(V * eig_inv_param.Ls * sss * eig_inv_param.cpu_prec);
   }
-
-  // Place an initial guess to first vector in host array
-  for (int i = 0; i < V * eig_inv_param.Ls * sss; i++) {
-    if (eig_inv_param.cpu_prec == QUDA_SINGLE_PRECISION) {
-      ((float *)host_evecs)[i] = rand() / (float)RAND_MAX;
-    } else {
-      ((double *)host_evecs)[i] = rand() / (double)RAND_MAX;
-      ;
-    }
-  }
+  double _Complex *host_evals = (double _Complex *)malloc(eig_param.nEv * sizeof(double _Complex));
 
   // This function returns the host_evecs and host_evals pointers, populated with the
   // requested data, at the requested prec. All the information needed to perfom the
@@ -457,13 +442,15 @@ int main(int argc, char **argv)
   // precision is double, the routine will use ARPACK rather than the GPU.
   double time = -((double)clock());
   if (eig_param.arpack_check && !(eig_inv_param.cpu_prec == QUDA_DOUBLE_PRECISION)) {
-    errorQuda("ARPACK check only availible in double precision");
+    errorQuda("ARPACK check only available in double precision");
   }
+
   eigensolveQuda(host_evecs, host_evals, &eig_param);
   time += (double)clock();
   printfQuda("Time for %s solution = %f\n", eig_param.arpack_check ? "ARPACK" : "QUDA", time / CLOCKS_PER_SEC);
 
   // Deallocate host memory
+  for (int i = 0; i < eig_nConv; i++) free(host_evecs[i]);
   free(host_evecs);
   free(host_evals);
 

@@ -72,7 +72,7 @@
 #undef PRINT_PARAM
 
 #include <gauge_tools.h>
-#include <contractQuda.h>
+#include <contract_quda.h>
 
 #include <momentum.h>
 
@@ -231,10 +231,10 @@ static TimeProfile profilePhase("staggeredPhaseQuda");
 //!< Profiler for contractions
 static TimeProfile profileContract("contractQuda");
 
-//!< Profiler for contractions
+//!< Profiler for covariant derivative
 static TimeProfile profileCovDev("covDevQuda");
 
-//!< Profiler for contractions
+//!< Profiler for momentum action
 static TimeProfile profileMomAction("momActionQuda");
 
 //!< Profiler for endQuda
@@ -1516,6 +1516,7 @@ void endQuda(void)
     profileDslash.Print();
     profileInvert.Print();
     profileMulti.Print();
+    profileEigensolve.Print();
     profileFatLink.Print();
     profileGaugeForce.Print();
     profileGaugeUpdate.Print();
@@ -2404,21 +2405,17 @@ void cloverQuda(void *h_out, void *h_in, QudaInvertParam *inv_param, QudaParity 
   popVerbosity();
 }
 
-void eigensolveQuda(void *host_evecs, void *host_evals, QudaEigParam *eig_param)
+void eigensolveQuda(void **host_evecs, double _Complex *host_evals, QudaEigParam *eig_param)
 {
-
-  profilerStart(__func__);
+  profileEigensolve.TPSTART(QUDA_PROFILE_TOTAL);
+  profileEigensolve.TPSTART(QUDA_PROFILE_INIT);
 
   // Transfer the inv param structure contained in eig_param
-  QudaInvertParam *inv_param;
-  inv_param = eig_param->invert_param;
+  QudaInvertParam *inv_param = eig_param->invert_param;
 
   if (inv_param->dslash_type == QUDA_DOMAIN_WALL_DSLASH || inv_param->dslash_type == QUDA_DOMAIN_WALL_4D_DSLASH
       || inv_param->dslash_type == QUDA_MOBIUS_DWF_DSLASH)
     setKernelPackT(true);
-
-  profileEigensolve.TPSTART(QUDA_PROFILE_TOTAL);
-  profileEigensolve.TPSTART(QUDA_PROFILE_INIT);
 
   if (!initialized) errorQuda("QUDA not initialized");
 
@@ -2448,16 +2445,19 @@ void eigensolveQuda(void *host_evecs, void *host_evals, QudaEigParam *eig_param)
   // create the dirac operator
   createDirac(d, dSloppy, dPre, *inv_param, pc_solve);
   Dirac &dirac = *d;
-  Dirac &diracSloppy = *dSloppy;
-  Dirac &diracPre = *dPre;
-  //------------------------------------------------------
 
   // Create device side ColorSpinorField vector space and to pass to the
   // compute function.
   const int *X = cudaGauge->X();
-  ColorSpinorParam cpuParam(host_evecs, *inv_param, X, inv_param->solution_type, inv_param->input_location);
+  ColorSpinorParam cpuParam(host_evecs[0], *inv_param, X, inv_param->solution_type, inv_param->input_location);
 
-  // Copy any initial guess in resident in host array
+  // create wrappers around application vector set
+  std::vector<ColorSpinorField *> host_evecs_;
+  for (int i = 0; i < eig_param->nConv; i++) {
+    cpuParam.v = host_evecs[i];
+    host_evecs_.push_back(ColorSpinorField::Create(cpuParam));
+  }
+
   ColorSpinorParam cudaParam(cpuParam);
   cudaParam.location = QUDA_CUDA_FIELD_LOCATION;
   cudaParam.create = QUDA_ZERO_FIELD_CREATE;
@@ -2474,39 +2474,38 @@ void eigensolveQuda(void *host_evecs, void *host_evals, QudaEigParam *eig_param)
   }
 
   profileEigensolve.TPSTOP(QUDA_PROFILE_INIT);
-  profileEigensolve.TPSTART(QUDA_PROFILE_COMPUTE);
 
   if (!eig_param->use_norm_op && !eig_param->use_dagger) {
-    DiracM m(dirac), mSloppy(diracSloppy), mPre(diracPre);
+    DiracM m(dirac);
     if (eig_param->arpack_check) {
-      arpack_solve(host_evecs, host_evals, m, eig_param, &cpuParam);
+      arpack_solve(host_evecs_, evals, m, eig_param, profileEigensolve);
     } else {
       EigenSolver *eig_solve = EigenSolver::create(eig_param, m, profileEigensolve);
       (*eig_solve)(kSpace, evals);
       delete eig_solve;
     }
   } else if (!eig_param->use_norm_op && eig_param->use_dagger) {
-    DiracMdag m(dirac), mSloppy(diracSloppy), mPre(diracPre);
+    DiracMdag m(dirac);
     if (eig_param->arpack_check) {
-      arpack_solve(host_evecs, host_evals, m, eig_param, &cpuParam);
+      arpack_solve(host_evecs_, evals, m, eig_param, profileEigensolve);
     } else {
       EigenSolver *eig_solve = EigenSolver::create(eig_param, m, profileEigensolve);
       (*eig_solve)(kSpace, evals);
       delete eig_solve;
     }
   } else if (eig_param->use_norm_op && !eig_param->use_dagger) {
-    DiracMdagM m(dirac), mSloppy(diracSloppy), mPre(diracPre);
+    DiracMdagM m(dirac);
     if (eig_param->arpack_check) {
-      arpack_solve(host_evecs, host_evals, m, eig_param, &cpuParam);
+      arpack_solve(host_evecs_, evals, m, eig_param, profileEigensolve);
     } else {
       EigenSolver *eig_solve = EigenSolver::create(eig_param, m, profileEigensolve);
       (*eig_solve)(kSpace, evals);
       delete eig_solve;
     }
   } else if (eig_param->use_norm_op && eig_param->use_dagger) {
-    DiracMMdag m(dirac), mSloppy(diracSloppy), mPre(diracPre);
+    DiracMMdag m(dirac);
     if (eig_param->arpack_check) {
-      arpack_solve(host_evecs, host_evals, m, eig_param, &cpuParam);
+      arpack_solve(host_evecs_, evals, m, eig_param, profileEigensolve);
     } else {
       EigenSolver *eig_solve = EigenSolver::create(eig_param, m, profileEigensolve);
       (*eig_solve)(kSpace, evals);
@@ -2516,31 +2515,18 @@ void eigensolveQuda(void *host_evecs, void *host_evals, QudaEigParam *eig_param)
     errorQuda("Invalid use_norm_op and dagger combination");
   }
 
+  // Copy eigen values back
+  for (int i = 0; i < eig_param->nConv; i++) { host_evals[i] = real(evals[i]) + imag(evals[i]) * _Complex_I; }
+
   // Transfer Eigenpairs back to host if using GPU eigensolver
   if (!(eig_param->arpack_check)) {
-    // Get number of reals
-    int elems = 2 * kSpace[0]->Ncolor() * kSpace[0]->Nspin() * kSpace[0]->Volume();
-    if (inv_param->cpu_prec == QUDA_DOUBLE_PRECISION) {
-      for (int i = 0; i < eig_param->nConv; i++) {
-        ((complex<double> *)host_evals)[i] = evals[i];
-	cpuParam.v = &((char*)host_evecs)[i*cpuParam.Precision()*2*kSpace[i]->Volume()*kSpace[i]->Ncolor()*kSpace[i]->Nspin()];
-	std::vector<ColorSpinorField *> host_vec;
-        host_vec.push_back(ColorSpinorField::Create(cpuParam));
-        blas::copy(*host_vec[0], *kSpace[i]);
-      }
-    } else {
-      for (int i = 0; i < eig_param->nConv; i++) {
-        ((complex<float> *)host_evals)[i] = evals[i];
-	cpuParam.v = &((char*)host_evecs)[i*cpuParam.Precision()*2*kSpace[i]->Volume()*kSpace[i]->Ncolor()*kSpace[i]->Nspin()];
-        std::vector<ColorSpinorField *> host_vec;
-        host_vec.push_back(ColorSpinorField::Create(cpuParam));
-        blas::copy(*host_vec[0], *kSpace[i]);
-      }
-    }
+    profileEigensolve.TPSTART(QUDA_PROFILE_D2H);
+    for (int i = 0; i < eig_param->nConv; i++) *host_evecs_[i] = *kSpace[i];
+    profileEigensolve.TPSTOP(QUDA_PROFILE_D2H);
   }
 
-  profileEigensolve.TPSTOP(QUDA_PROFILE_COMPUTE);
   profileEigensolve.TPSTART(QUDA_PROFILE_FREE);
+  for (int i = 0; i < eig_param->nConv; i++) delete host_evecs_[i];
   delete d;
   delete dSloppy;
   delete dPre;
@@ -2553,7 +2539,6 @@ void eigensolveQuda(void *host_evecs, void *host_evals, QudaEigParam *eig_param)
   saveTuneCache();
 
   profileEigensolve.TPSTOP(QUDA_PROFILE_TOTAL);
-  profilerStop(__func__);
 }
 
 multigrid_solver::multigrid_solver(QudaMultigridParam &mg_param, TimeProfile &profile)
@@ -5820,38 +5805,60 @@ int computeGaugeFixingFFTQuda(void* gauge, const unsigned int gauge_dir,  const 
   return 0;
 }
 
-/**
- * Compute a volume or time-slice contraction of two spinors.
- * @param x     Spinor to contract. This is conjugated before contraction.
- * @param y     Spinor to contract.
- * @param ctrn  Contraction output. The size must be Volume*16
- * @param cType Contraction type, allows for volume or time-slice contractions.
- * @param tC    Time-slice to contract in case the contraction is in a single time-slice.
- */
-void contract(const cudaColorSpinorField x, const cudaColorSpinorField y, void *ctrn, const QudaContractType cType)
+void contractQuda(const void *hp_x, const void *hp_y, void *h_result, const QudaContractType cType,
+                  QudaInvertParam *param, const int *X)
 {
-  if (x.Precision() == QUDA_DOUBLE_PRECISION) {
-    contractCuda(x.Even(), y.Even(), ((double2*)ctrn), cType, QUDA_EVEN_PARITY, profileContract);
-    contractCuda(x.Odd(),  y.Odd(),  ((double2*)ctrn), cType, QUDA_ODD_PARITY,  profileContract);
-  } else if (x.Precision() == QUDA_SINGLE_PRECISION) {
-    contractCuda(x.Even(), y.Even(), ((float2*) ctrn), cType, QUDA_EVEN_PARITY, profileContract);
-    contractCuda(x.Odd(),  y.Odd(),  ((float2*) ctrn), cType, QUDA_ODD_PARITY,  profileContract);
-  } else {
-    errorQuda("Precision not supported for contractions\n");
-  }
-}
+  // DMH: Easiest way to construct ColorSpinorField? Do we require the user
+  //     to declare and fill and invert_param, or can it just be hacked?.
 
-void contract(const cudaColorSpinorField x, const cudaColorSpinorField y, void *ctrn, const QudaContractType cType, const int tC)
-{
-  if (x.Precision() == QUDA_DOUBLE_PRECISION) {
-    contractCuda(x.Even(), y.Even(), ((double2*)ctrn), cType, tC, QUDA_EVEN_PARITY, profileContract);
-    contractCuda(x.Odd(),  y.Odd(),  ((double2*)ctrn), cType, tC, QUDA_ODD_PARITY,  profileContract);
-  } else if (x.Precision() == QUDA_SINGLE_PRECISION) {
-    contractCuda(x.Even(), y.Even(), ((float2*) ctrn), cType, tC, QUDA_EVEN_PARITY, profileContract);
-    contractCuda(x.Odd(),  y.Odd(),  ((float2*) ctrn), cType, tC, QUDA_ODD_PARITY,  profileContract);
-  } else {
-    errorQuda("Precision not supported for contractions\n");
-  }
+  profileContract.TPSTART(QUDA_PROFILE_TOTAL);
+  profileContract.TPSTART(QUDA_PROFILE_INIT);
+  // wrap CPU host side pointers
+  ColorSpinorParam cpuParam((void *)hp_x, *param, X, false, param->input_location);
+  ColorSpinorField *h_x = ColorSpinorField::Create(cpuParam);
+
+  cpuParam.v = (void *)hp_y;
+  ColorSpinorField *h_y = ColorSpinorField::Create(cpuParam);
+
+  // Create device parameter
+  ColorSpinorParam cudaParam(cpuParam);
+  cudaParam.location = QUDA_CUDA_FIELD_LOCATION;
+  cudaParam.create = QUDA_NULL_FIELD_CREATE;
+  // Quda uses Degrand-Rossi gamma basis for contractions and will
+  // automatically reorder data if necessary.
+  cudaParam.gammaBasis = QUDA_DEGRAND_ROSSI_GAMMA_BASIS;
+  cudaParam.setPrecision(cpuParam.Precision(), cpuParam.Precision(), true);
+
+  std::vector<ColorSpinorField *> x, y;
+  x.push_back(ColorSpinorField::Create(cudaParam));
+  y.push_back(ColorSpinorField::Create(cudaParam));
+
+  size_t data_bytes = x[0]->Volume() * x[0]->Nspin() * x[0]->Nspin() * 2 * x[0]->Precision();
+  void *d_result = pool_device_malloc(data_bytes);
+  profileContract.TPSTOP(QUDA_PROFILE_INIT);
+
+  profileContract.TPSTART(QUDA_PROFILE_H2D);
+  *x[0] = *h_x;
+  *y[0] = *h_y;
+  profileContract.TPSTOP(QUDA_PROFILE_H2D);
+
+  profileContract.TPSTART(QUDA_PROFILE_COMPUTE);
+  contractQuda(*x[0], *y[0], d_result, cType);
+  profileContract.TPSTOP(QUDA_PROFILE_COMPUTE);
+
+  profileContract.TPSTART(QUDA_PROFILE_D2H);
+  qudaMemcpy(h_result, d_result, data_bytes, cudaMemcpyDeviceToHost);
+  profileContract.TPSTOP(QUDA_PROFILE_D2H);
+
+  profileContract.TPSTART(QUDA_PROFILE_FREE);
+  pool_device_free(d_result);
+  delete x[0];
+  delete y[0];
+  delete h_y;
+  delete h_x;
+  profileContract.TPSTOP(QUDA_PROFILE_FREE);
+
+  profileContract.TPSTOP(QUDA_PROFILE_TOTAL);
 }
 
 double qChargeQuda()

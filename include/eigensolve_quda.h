@@ -38,8 +38,6 @@ protected:
     int num_locked;
     int num_keep;
 
-    double *residua;
-
     // Device side vector workspace
     std::vector<ColorSpinorField *> r;
     std::vector<ColorSpinorField *> d_vecs_tmp;
@@ -120,9 +118,11 @@ public:
        @param[in] mat Matrix operator
        @param[in] evecs The eigenvectors
        @param[in] evals The eigenvalues
+       @param[in] residua The 2-norm of the residual vector
        @param[in] k The number to compute
     */
-    void computeEvals(const DiracMatrix &mat, std::vector<ColorSpinorField *> &evecs, std::vector<Complex> &evals, int k);
+    void computeEvals(const DiracMatrix &mat, std::vector<ColorSpinorField *> &evecs, std::vector<Complex> &evals,
+                      std::vector<double> &residua, int k);
 
     /**
        @brief Load vectors from file
@@ -152,6 +152,9 @@ public:
   */
   class TRLM : public EigenSolver
   {
+
+protected:
+    double *residua;
 
 public:
     const DiracMatrix &mat;

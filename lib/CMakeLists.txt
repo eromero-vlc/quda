@@ -203,10 +203,6 @@ if(QUDA_ARPACK)
   endif()
 endif()
 
-if(QUDA_PRIMME)
-  target_link_libraries(quda PRIVATE ${PRIMME})
-endif()
-
 if(QUDA_NVML)
   target_link_libraries(quda PRIVATE ${NVML_LIBRARY})
 endif()

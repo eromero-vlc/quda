@@ -60,9 +60,6 @@ namespace quda
     if (nKr == 0) errorQuda("nKr=0 passed to Eigensolver\n");
     if (nConv == 0) errorQuda("nConv=0 passed to Eigensolver\n");
 
-    residua = (double *)safe_malloc(nKr * sizeof(double));
-    for (int i = 0; i < nKr; i++) { residua[i] = 0.0; }
-
     // Quda MultiBLAS friendly array
     Qmat = (Complex *)safe_malloc(nEv * nKr * sizeof(Complex));
 
@@ -268,20 +265,33 @@ namespace quda
   }
 
   void EigenSolver::computeEvals(const DiracMatrix &mat, std::vector<ColorSpinorField *> &evecs,
-                                 std::vector<Complex> &evals, int size)
+                                 std::vector<Complex> &evals, std::vector<double> &residua, int size)
   {
+    if (size <= 0) return;
+    if (evecs.size() < (unsigned int)size) errorQuda("Too short vector passed as evecs");
+    if (evals.size() < (unsigned int)size) errorQuda("Too short vector passed as evals");
+    if (residua.size() < (unsigned int)size) errorQuda("Too short vector passed as residua");
+
+    // Create the device side residual vector by cloning
+    // the kSpace passed to the function.
+    ColorSpinorParam csParam(*evecs[0]);
+    csParam.create = QUDA_ZERO_FIELD_CREATE;
+    ColorSpinorField *aux = ColorSpinorField::Create(csParam);
+
     for (int i = 0; i < size; i++) {
       // r = A * v_i
-      matVec(mat, *r[0], *evecs[i]);
+      matVec(mat, *aux, *evecs[i]);
 
       // lambda_i = v_i^dag A v_i / (v_i^dag * v_i)
-      evals[i] = blas::cDotProduct(*evecs[i], *r[0]) / sqrt(blas::norm2(*evecs[i]));
+      evals[i] = blas::cDotProduct(*evecs[i], *aux) / sqrt(blas::norm2(*evecs[i]));
 
       // Measure ||lambda_i*v_i - A*v_i||
       Complex n_unit(-1.0, 0.0);
-      blas::caxpby(evals[i], *evecs[i], n_unit, *r[0]);
-      residua[i] = sqrt(blas::norm2(*r[0]));
+      blas::caxpby(evals[i], *evecs[i], n_unit, *aux);
+      residua[i] = sqrt(blas::norm2(*aux));
     }
+
+    delete aux;
   }
 
   void EigenSolver::loadVectors(std::vector<ColorSpinorField *> &eig_vecs, std::string vec_infile)
@@ -402,7 +412,8 @@ namespace quda
     r.push_back(ColorSpinorField::Create(csParam));
 
     // Error estimates (residua) given by ||A*vec - lambda*vec||
-    computeEvals(mat, kSpace, evals, nEv);
+    std::vector<double> residua(nConv);
+    computeEvals(mat, kSpace, evals, residua, nEv);
     for (int i = 0; i < nEv; i++) {
       if (getVerbosity() >= QUDA_SUMMARIZE)
         printfQuda("EigValue[%04d]: (%+.16e, %+.16e) residual %.16e\n", i, evals[i].real(), evals[i].imag(), residua[i]);
@@ -415,7 +426,6 @@ namespace quda
   {
     if (tmp1) delete tmp1;
     if (tmp2) delete tmp2;
-    host_free(residua);
     host_free(Qmat);
   }
   //-----------------------------------------------------------------------------
@@ -442,6 +452,9 @@ namespace quda
     if (!(eig_param->spectrum == QUDA_SPECTRUM_LR_EIG || eig_param->spectrum == QUDA_SPECTRUM_SR_EIG)) {
       errorQuda("Only real spectrum type (LR or SR) can be passed to the TR Lanczos solver");
     }
+
+    residua = (double *)safe_malloc(nKr * sizeof(double));
+    for (int i = 0; i < nKr; i++) { residua[i] = 0.0; }
 
     profile.TPSTOP(QUDA_PROFILE_INIT);
   }
@@ -627,7 +640,11 @@ namespace quda
       }
 
       // Compute eigenvalues
-      computeEvals(mat, kSpace, evals, nEv);
+      std::vector<double> residua_v(nEv);
+      computeEvals(mat, kSpace, evals, residua_v, nEv);
+      for (int i = 0; i < nEv; i++) {
+        residua[i] = residua_v[i];
+      }
       if (getVerbosity() >= QUDA_SUMMARIZE) {
         for (int i = 0; i < nEv; i++) {
           printfQuda("EigValue[%04d]: (%+.16e, %+.16e) residual %.16e\n", i, evals[i].real(), evals[i].imag(),
@@ -663,6 +680,7 @@ namespace quda
   {
     ritz_mat.clear();
     ritz_mat.shrink_to_fit();
+    host_free(residua);
     host_free(alpha);
     host_free(beta);
   }

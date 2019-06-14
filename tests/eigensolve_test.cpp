@@ -39,6 +39,7 @@ extern QudaReconstructType link_recon;
 extern QudaPrecision prec;
 extern QudaPrecision prec_sloppy;
 extern QudaPrecision prec_precondition;
+extern QudaInverterType  precon_type;
 extern QudaReconstructType link_recon_sloppy;
 extern QudaReconstructType link_recon_precondition;
 extern double mass;
@@ -256,7 +257,7 @@ void setInvertParam(QudaInvertParam &inv_param)
   inv_param.matpc_type = matpc_type;
   inv_param.inv_type = QUDA_GCR_INVERTER;
   inv_param.verbosity = verbosity;
-  inv_param.inv_type_precondition = QUDA_MG_INVERTER;
+  inv_param.inv_type_precondition = precon_type;
   inv_param.tol = tol;
 
   // require both L2 relative and heavy quark residual to determine

@@ -1348,6 +1348,8 @@ get_solver_type(char* s)
     ret = QUDA_CA_CGNE_INVERTER;
   } else if (strcmp(s, "ca-cgnr") == 0){
     ret = QUDA_CA_CGNR_INVERTER;
+  } else if (strcmp(s, "none") == 0){
+    ret = QUDA_INVALID_INVERTER;
   } else if (strcmp(s, "ca-gcr") == 0){
     ret = QUDA_CA_GCR_INVERTER;
   } else {

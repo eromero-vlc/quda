@@ -18,13 +18,6 @@
 #include <primme.h>
 #include "magma_v2.h"
 
-static size_t lcm(size_t x, size_t y)
-{
-  size_t greater = std::max(x, y);
-  while (greater % x != 0 || greater % y != 0) greater++;
-  return greater;
-}
-
 /** @fn  int tprimme(evals_type *evals, evecs_type *evecs, resNorms_type *resNorms, primme_params *primme, QudaFieldLocation location)
    @brief Main call to PRIMME
    @param evals The returned eigenvalues; if it is not complex, the operator is assumed to be Hermitian; otherwise it is normal operator
@@ -112,8 +105,8 @@ namespace quda
         errorQuda("Wrong column number, asking for column %d of y, but only having %d", yi, yparam.nVec);
       xparam.nVec = yparam.nVec = 1;
       xparam.create = yparam.create = QUDA_REFERENCE_FIELD_CREATE;
-      *(char**)&xparam.v += x.Bytes() * xi;
-      *(char**)&yparam.v += y.Bytes() * yi;
+      xparam.v = (void *)((char*)x.V() + x.Bytes() * xi);
+      yparam.v = (void *)((char*)y.V() + y.Bytes() * yi);
       ColorSpinorField *x1 = ColorSpinorField::Create(xparam); 
       ColorSpinorField *y1 = ColorSpinorField::Create(yparam); 
       blas::copy(*y1, *x1);
@@ -153,13 +146,16 @@ namespace quda
         invParam->v = y0;
         ColorSpinorField *y = ColorSpinorField::Create(*invParam);
 
+        // Initialize y, for instance y = x
+        blas::copy(*y, *x);
+
         PRIMME *eigensolver = (PRIMME*)primme->matrix; 
         if (!use_inv) {
           // Do y = Dirac * x
           eigensolver->matVec(eigensolver->mat, *y, *x);
         } else {
           // Do y = Dirac^{-1} * x
-          invertQuda(y, x, eigensolver->get_eig_param()->invert_param);
+          invertQuda(y0, x0, eigensolver->get_eig_param()->invert_param);
         }
 
         // Do y = gamma * y
@@ -179,26 +175,17 @@ namespace quda
     {
       const QudaEigParam *eig_param = eigensolver->get_eig_param();
 
-      // Place eigenvectors where the inverter is located regardless of the location of kSpace
-      QudaFieldLocation location = eig_param->invert_param->input_location;
-
-      // BLAS/LAPACK obsession with the Fortran's way of passing arrays is contagious, and eigenvectors passed to PRIMME,
-      // library which relays on BLAS/LAPACK, follow the same convention. So create a multivector for evecs
       ColorSpinorParam invParam(*kSpace[0]);
-      invParam.nVec = eig_param->nEv;
-      invParam.create = QUDA_NULL_FIELD_CREATE;
-      ColorSpinorField *evecs = ColorSpinorField::Create(invParam);
 
-      // Copy initial guess to evecs
-      int initSize = 0;
-      for (size_t i=0; i<kSpace.size() && i<(size_t)std::min(eig_param->nEv, 0); i++) {
-        if (kSpace[i] == nullptr) break;
-        if (sqrt(blas::norm2(*kSpace[i])) <= 0) break;
-        copy_column(*evecs, i, *kSpace[i], 0);
-        initSize++;
+      // Place eigenvectors where kSpace is located
+      QudaFieldLocation location = invParam.location;
+
+      // Set the inverter's location and tolerance
+      if (use_inv) {
+        eig_param->invert_param->input_location = eig_param->invert_param->output_location = location;
+        eig_param->invert_param->tol = eig_param->tol;
+        eig_param->invert_param->residual_type = QUDA_L2_RELATIVE_RESIDUAL;
       }
-      if (getVerbosity() >= QUDA_SUMMARIZE && initSize > 0)
-        printfQuda("Using %d initial guesses\n", initSize);
 
       // Initialize PRIMME configuration
       primme_params primme;
@@ -216,13 +203,7 @@ namespace quda
       primme.globalSumReal_type = primme_op_double;
 
       // Determine local and global matrix dimension
-      size_t local_vol = 1;
-      for (int i = 0; i < 4; i++) {
-        local_vol *= invParam.x[i];
-      }
-      local_vol *= eig_param->invert_param->Ls;
-      int nSpin = (eig_param->invert_param->dslash_type == QUDA_LAPLACE_DSLASH) ? 1 : 4;
-      size_t nLocal = local_vol * nSpin * 3;
+      size_t nLocal = kSpace[0]->Length() / 2;
       double n = nLocal; reduceDouble(n);
       primme.n = n;             /* set global problem dimension */
       primme.nLocal = nLocal;   /* set local problem dimension */
@@ -240,6 +221,34 @@ namespace quda
       // Create residual norms
       real_type *rnorms = new real_type[eig_param->nEv];
 
+      // Create eigenvectors
+      // NOTE: BLAS/LAPACK obsession with the Fortran's way of passing arrays is contagious, and eigenvectors passed to
+      // PRIMME, library which relays on BLAS/LAPACK heavily, follow the same convention.
+      evecs_type *evecs_ptr;
+      if (location == QUDA_CPU_FIELD_LOCATION) {
+        evecs_ptr = (evecs_type *)safe_malloc(eig_param->nEv * nLocal * sizeof(evecs_type));
+      } else {
+        evecs_ptr = (evecs_type *)pool_device_malloc(eig_param->nEv * nLocal * sizeof(evecs_type));
+      }
+      invParam.v = evecs_ptr;
+      invParam.nVec = eig_param->nEv;
+      invParam.create = QUDA_REFERENCE_FIELD_CREATE;
+      ColorSpinorField *evecs = ColorSpinorField::Create(invParam);
+      invParam.nVec = 1;
+      invParam.create = QUDA_NULL_FIELD_CREATE;
+      invParam.v = nullptr;
+
+      // Copy initial guess to evecs
+      int initSize = 0;
+      for (size_t i=0; i<kSpace.size() && i<(size_t)std::min(eig_param->nEv, 0); i++) {
+        if (kSpace[i] == nullptr) break;
+        if (sqrt(blas::norm2(*kSpace[i])) <= 0) break;
+        copy_column(*evecs, i, *kSpace[i], 0);
+        initSize++;
+      }
+      if (getVerbosity() >= QUDA_SUMMARIZE && initSize > 0)
+        printfQuda("Using %d initial guesses\n", initSize);
+
       // Seek for the largest eigenvalue in magnitude for using the inverse operator; and the smallest otherwise
       primme.target = (use_inv ? primme_largest_abs : primme_closest_abs);
       double zero = 0;
@@ -250,12 +259,15 @@ namespace quda
       primme.matrixMatvec = use_inv ? primmeMatvec<true>::fun : primmeMatvec<false>::fun;
       ColorSpinorParam invParam0(invParam);
       primme.commInfo = &invParam0;
-      primme.matrix = (void*)eig_param;
+      primme.matrix = eigensolver;
 
       // Enforce leading dimension of matvec's input/output vectors to be aligned for textures
       if (location == QUDA_CUDA_FIELD_LOCATION && deviceProp.textureAlignment > 0) {
-        size_t alignment = lcm(sizeof(evecs_type), deviceProp.textureAlignment);
-        size_t nLocal_aligned = (nLocal * sizeof(evecs_type) + alignment - 1) / sizeof(evecs_type);
+        size_t alignment = std::max(sizeof(evecs_type), deviceProp.textureAlignment);
+        if (alignment % std::min(sizeof(evecs_type), deviceProp.textureAlignment) != 0) {
+          errorQuda("Weird texture alignment (%lu) or type size (%lu)", deviceProp.textureAlignment, sizeof(evecs_type));
+        }
+        size_t nLocal_aligned = (nLocal * sizeof(evecs_type) + alignment - 1) / alignment * (alignment / sizeof(evecs_type));
         primme.ldOPs = nLocal_aligned; 
       }
 
@@ -284,21 +296,43 @@ namespace quda
       if (getVerbosity() >= QUDA_SUMMARIZE)
         printfQuda("Running Eigensolver in %s precision\n", QudaPrimmeType<prec>::name);
 
+      if (getVerbosity() >= QUDA_SUMMARIZE)
+        primme.printLevel = 3;
+
       // Call primme
-      int ret = tprimme(evals, (evecs_type*)evecs->V(), rnorms, &primme, location);
+      int ret = tprimme(evals, evecs_ptr, rnorms, &primme, location);
+      checkCudaError();
 
       if (ret != 0) {
         errorQuda("PRIMME returns the error code %d. Computed %d pairs.", ret, primme.initSize);
       }
 
+      // Invert eigenvalues if needed
+      if (use_inv) {
+        for (int i = 0; i < primme.initSize; i++) {
+          evals[i] = (evals_type)1.0/evals[i];
+        }
+      }
+
+      // Copy evecs to kSpace
+      kSpace.resize(primme.initSize);
+      for (int i=0; i<primme.initSize; i++) {
+        copy_column(*kSpace[i], 0, *evecs, i);
+      }
+
+      // Compute eigenvalues and residuals
+      std::vector<double> residua(primme.initSize);
+      eigensolver->computeEvals(eigensolver->mat, kSpace, evals_out, residua, primme.initSize);
+      if (getVerbosity() >= QUDA_SUMMARIZE) {
+        for (int i = 0; i < eig_param->nEv; i++) {
+          printfQuda("EigValue[%04d]: (%+.16e, %+.16e) residual %.16e\n", i, evals_out[i].real(), evals_out[i].imag(),
+                     residua[i]);
+        }
+      }
+
       if (getVerbosity() >= QUDA_SUMMARIZE) {
         printfQuda("PRIMME computed the requested %d vectors in %g restart steps and %g OP*x operations.\n", primme.initSize,
             (double)primme.stats.numRestarts, (double)primme.stats.numMatvecs);
-
-        // Dump all Ritz values and residua
-        for (int i = 0; i < eig_param->nEv; i++) {
-          printfQuda("RitzValue[%04d]: (%+.16e, %+.16e) residual %.16e\n", i, (double)std::fabs(evals[i]), 0.0, (double)rnorms[i]);
-        }
       }
 
       if (getVerbosity() >= QUDA_SUMMARIZE) {
@@ -312,22 +346,16 @@ namespace quda
             100 * timeComm / primme.stats.elapsedTime);
       }
 
-      // Copy evecs to kSpace
-      kSpace.resize(primme.initSize);
-      for (int i=0; i<primme.initSize; i++) {
-        copy_column(*kSpace[i], 0, *evecs, i);
-      }
-
-      // Copy evals to evals_out
-      evals_out.resize(primme.initSize);
-      for (int i=0; i<primme.initSize; i++) {
-        evals_out[i] = evals[i];
-      }
 
       // Local clean-up
       delete [] rnorms;
       delete [] evals;
       delete evecs;
+      if (location == QUDA_CPU_FIELD_LOCATION) {
+        host_free(evecs_ptr);
+      } else {
+        device_free(evecs_ptr);
+      }
       if (location == QUDA_CUDA_FIELD_LOCATION) {
         magma_queue_destroy(queue);
       }

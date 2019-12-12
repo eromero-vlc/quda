@@ -14,30 +14,29 @@ set (QUDA_OBJS
   inv_gcr_quda.cpp inv_mr_quda.cpp inv_sd_quda.cpp inv_xsd_quda.cpp
   inv_pcg_quda.cpp inv_mre.cpp interface_quda.cpp util_quda.cpp
   color_spinor_field.cpp color_spinor_util.cu color_spinor_pack.cu
-  color_spinor_wuppertal.cu covDev.cu gauge_covdev.cpp 
+  covDev.cu gauge_covdev.cpp
   cpu_color_spinor_field.cpp cuda_color_spinor_field.cpp dirac.cpp
   clover_field.cpp lattice_field.cpp gauge_field.cpp
   cpu_gauge_field.cpp cuda_gauge_field.cpp extract_gauge_ghost.cu
   extract_gauge_ghost_mg.cu max_gauge.cu gauge_update_quda.cu
   max_clover.cu dirac_clover.cpp dirac_wilson.cpp dirac_staggered.cpp
+  dirac_clover_hasenbusch_twist.cpp
   dirac_improved_staggered.cpp dirac_domain_wall.cpp
   dirac_domain_wall_4d.cpp dirac_mobius.cpp dirac_twisted_clover.cpp
   dirac_twisted_mass.cpp tune.cpp
   llfat_quda.cu gauge_force.cu gauge_random.cu
   gauge_field_strength_tensor.cu clover_quda.cu dslash_quda.cu
-  dslash_wilson.cu dslash_clover.cu dslash_clover_asym.cu
-  dslash_twisted_mass.cu dslash_ndeg_twisted_mass.cu
-  dslash_twisted_clover.cu dslash_domain_wall.cu
-  dslash_domain_wall_4d.cu dslash_mobius.cu
-  dslash4_staggered.cu dslash4_improved_staggered.cu
-  dslash4_wilson.cu dslash4_wilson_clover.cu dslash5_domain_wall.cu
-  dslash4_wilson_clover_preconditioned.cu 
-  dslash4_twisted_mass.cu dslash4_twisted_mass_preconditioned.cu
-  dslash4_ndeg_twisted_mass.cu dslash4_ndeg_twisted_mass_preconditioned.cu
-  dslash4_twisted_clover.cu dslash4_twisted_clover_preconditioned.cu
-  dslash4_domain_wall_4d.cu  dslash4_domain_wall_5d.cu
-  dslash_pack.cu dslash_pack2.cu
-  blas_quda.cu multi_blas_quda.cu copy_quda.cu reduce_quda.cu
+  dslash_staggered.cu dslash_improved_staggered.cu
+  dslash_wilson.cu dslash_wilson_clover.cu dslash5_domain_wall.cu
+  dslash_wilson_clover_preconditioned.cu 
+  dslash_twisted_mass.cu dslash_twisted_mass_preconditioned.cu
+  dslash_ndeg_twisted_mass.cu dslash_ndeg_twisted_mass_preconditioned.cu
+  dslash_twisted_clover.cu dslash_twisted_clover_preconditioned.cu
+  dslash_wilson_clover_hasenbusch_twist.cu
+  dslash_wilson_clover_hasenbusch_twist_preconditioned.cu
+  dslash_domain_wall_4d.cu  dslash_domain_wall_5d.cu
+  dslash_pack2.cu
+  blas_quda.cu multi_blas_quda.cu reduce_quda.cu
   multi_reduce_quda.cu contract.cu
   comm_common.cpp ${COMM_OBJS} ${NUMA_AFFINITY_OBJS} ${QIO_UTIL}
   clover_deriv_quda.cu clover_invert.cu copy_gauge_extended.cu
@@ -69,12 +68,9 @@ set (QUDA_OBJS
   gauge_fix_ovr_extra.cu gauge_fix_fft.cu gauge_fix_ovr.cu
   pgauge_det_trace.cu clover_outer_product.cu
   clover_sigma_outer_product.cu momentum.cu gauge_qcharge.cu
-  quda_cuda_api.cpp deflation.cpp checksum.cu version.cpp )
+  quda_cuda_api.cpp deflation.cpp checksum.cu
+  instantiate.cpp version.cpp )
 # cmake-format: on
-
-if(QUDA_LEGACY_DSLASH)
-  list(APPEND QUDA_OBJS dslash_improved_staggered.cu dslash_staggered.cu)
-endif()
 
 # split source into cu and cpp files
 foreach(item ${QUDA_OBJS})
@@ -123,7 +119,6 @@ else()
 endif()
 
 # include_directories
-target_include_directories(quda PRIVATE dslash_core)
 target_include_directories(quda SYSTEM PRIVATE ../include/externals)
 target_include_directories(quda PRIVATE .)
 target_include_directories(quda_cpp SYSTEM PRIVATE ../include/externals)
@@ -157,8 +152,26 @@ endif()
 
 target_link_libraries(quda INTERFACE ${CMAKE_THREAD_LIBS_INIT} ${QUDA_LIBS})
 
+if(QUDA_MULTIGRID)
+  target_link_libraries(quda PUBLIC ${CUDA_cublas_LIBRARY})
+endif(QUDA_MULTIGRID)
+
+if(QUDA_JITIFY)
+  target_link_libraries(quda PUBLIC ${CUDA_nvrtc_LIBRARY})
+  target_link_libraries(quda PUBLIC ${LIBDL_LIBRARIES})
+endif()
+
+if(QUDA_BACKWARDS)
+  target_include_directories(quda_cpp SYSTEM PRIVATE ${backward-cpp_SOURCE_DIR})
+  set_property(SOURCE comm_common.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${BACKWARD_DEFINITIONS})
+  set_property(SOURCE comm_common.cpp APPEND PROPERTY COMPILE_DEFINITIONS QUDA_BACKWARDSCPP)
+  set_property(SOURCE malloc.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${BACKWARD_DEFINITIONS})
+  set_property(SOURCE malloc.cpp APPEND PROPERTY COMPILE_DEFINITIONS QUDA_BACKWARDSCPP)
+  target_link_libraries(quda PUBLIC ${BACKWARD_LIBRARIES})
+endif()
+
 if(QUDA_QIO)
-  if(QUDA_DOWNLOAD_USQCD)
+  if(QUDA_DOWNLOAD_USQCD AND NOT QIO_FOUND)
     add_dependencies(quda QIO)
     add_dependencies(quda_cpp QIO)
   endif()
@@ -172,7 +185,7 @@ if(QUDA_QDPJIT)
 endif()
 
 if(QUDA_QMP)
-  if(QUDA_DOWNLOAD_USQCD)
+  if(QUDA_DOWNLOAD_USQCD AND NOT QMP_FOUND)
     add_dependencies(quda QMP)
     add_dependencies(quda_cpp QMP)
   endif()
@@ -249,10 +262,6 @@ write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/qudaConfigVersion.
 export(EXPORT qudaTargets FILE "${CMAKE_CURRENT_BINARY_DIR}/qudaTargets.cmake" NAMESPACE quda::)
 set(ConfigPackageLocation lib/cmake/quda/)
 install(EXPORT qudaTargets NAMESPACE quda:: DESTINATION ${ConfigPackageLocation})
-
-add_custom_target(gen ${PYTHON_EXECUTABLE} generate/gen.py
-                  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                  COMMENT "Generating dslash_core files")
 
 add_custom_target(mpi_nvtx ${PYTHON_EXECUTABLE} generate/wrap.py -g -o nvtx_pmpi.c generate/nvtx.w
                   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

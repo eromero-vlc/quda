@@ -16,6 +16,22 @@ namespace quda {
 
   struct FullClover;
 
+  /**
+     @brief Helper function for getting the implied spinor parity from a matrix preconditioning type.
+     @param[in] matpc_type The matrix preconditioning type
+     @return Even or Odd as appropriate, invalid if the preconditioning type is invalid (implicitly non-preconditioned)
+   */
+  constexpr QudaParity impliedParityFromMatPC(const QudaMatPCType &matpc_type)
+  {
+    if (matpc_type == QUDA_MATPC_EVEN_EVEN || matpc_type == QUDA_MATPC_EVEN_EVEN_ASYMMETRIC) {
+      return QUDA_EVEN_PARITY;
+    } else if (matpc_type == QUDA_MATPC_ODD_ODD || matpc_type == QUDA_MATPC_ODD_ODD_ASYMMETRIC) {
+      return QUDA_ODD_PARITY;
+    } else {
+      return QUDA_INVALID_PARITY;
+    }
+  }
+
   /** Typedef for a set of spinors. Can be further divided into subsets ,e.g., with different precisions (not implemented currently) */
   typedef std::vector<ColorSpinorField*> CompositeColorSpinorField;
 
@@ -34,9 +50,9 @@ namespace quda {
      int  dim;//individual component has dim = 0
      int  id;
 
-     int volume;       // volume of a single eigenvector
-     int volumeCB;     // CB volume of a single eigenvector
-     int stride;       // stride of a single eigenvector
+     size_t volume;       // volume of a single eigenvector
+     size_t volumeCB;     // CB volume of a single eigenvector
+     size_t stride;       // stride of a single eigenvector
      size_t real_length;  // physical length of a single eigenvector
      size_t length;       // length including pads (but not ghost zones)
 
@@ -96,6 +112,12 @@ namespace quda {
 
     QudaPCType pc_type; // used to select preconditioning method in DWF
 
+    /** Used to specify whether a single parity field is even/odd
+     * By construction not enforced, this is more of an optional
+     * metadata to specify, for ex, if an eigensolver is for an
+     * even or odd parity. */
+    QudaParity suggested_parity;
+
     void *v; // pointer to field
     void *norm;
 
@@ -108,21 +130,22 @@ namespace quda {
     ColorSpinorParam(const ColorSpinorField &a);
 
     ColorSpinorParam() :
-        LatticeFieldParam(),
-        location(QUDA_INVALID_FIELD_LOCATION),
-        nColor(0),
-        nSpin(0),
-        nVec(1),
-        twistFlavor(QUDA_TWIST_INVALID),
-        siteOrder(QUDA_INVALID_SITE_ORDER),
-        fieldOrder(QUDA_INVALID_FIELD_ORDER),
-        gammaBasis(QUDA_INVALID_GAMMA_BASIS),
-        create(QUDA_INVALID_FIELD_CREATE),
-        pc_type(QUDA_PC_INVALID),
-        is_composite(false),
-        composite_dim(0),
-        is_component(false),
-        component_id(0)
+      LatticeFieldParam(),
+      location(QUDA_INVALID_FIELD_LOCATION),
+      nColor(0),
+      nSpin(0),
+      nVec(1),
+      twistFlavor(QUDA_TWIST_INVALID),
+      siteOrder(QUDA_INVALID_SITE_ORDER),
+      fieldOrder(QUDA_INVALID_FIELD_ORDER),
+      gammaBasis(QUDA_INVALID_GAMMA_BASIS),
+      create(QUDA_INVALID_FIELD_CREATE),
+      pc_type(QUDA_PC_INVALID),
+      suggested_parity(QUDA_INVALID_PARITY),
+      is_composite(false),
+      composite_dim(0),
+      is_component(false),
+      component_id(0)
     {
       ;
     }
@@ -156,11 +179,12 @@ namespace quda {
 
       if (!pc_solution) {
         siteSubset = QUDA_FULL_SITE_SUBSET;
-        ;
       } else {
         x[0] /= 2; // X defined the full lattice dimensions
         siteSubset = QUDA_PARITY_SITE_SUBSET;
       }
+
+      suggested_parity = impliedParityFromMatPC(inv_param.matpc_type);
 
       if (inv_param.dslash_type == QUDA_DOMAIN_WALL_DSLASH || inv_param.dslash_type == QUDA_DOMAIN_WALL_4D_DSLASH
           || inv_param.dslash_type == QUDA_MOBIUS_DWF_DSLASH) {
@@ -175,8 +199,8 @@ namespace quda {
       }
 
       if (inv_param.dirac_order == QUDA_INTERNAL_DIRAC_ORDER) {
-        fieldOrder
-            = (precision == QUDA_DOUBLE_PRECISION || nSpin == 1) ? QUDA_FLOAT2_FIELD_ORDER : QUDA_FLOAT4_FIELD_ORDER;
+        fieldOrder = (precision == QUDA_DOUBLE_PRECISION || nSpin == 1 || nSpin == 2) ? QUDA_FLOAT2_FIELD_ORDER :
+                                                                                        QUDA_FLOAT4_FIELD_ORDER;
         siteOrder = QUDA_EVEN_ODD_SITE_ORDER;
       } else if (inv_param.dirac_order == QUDA_CPS_WILSON_DIRAC_ORDER) {
         fieldOrder = QUDA_SPACE_SPIN_COLOR_FIELD_ORDER;
@@ -199,28 +223,29 @@ namespace quda {
     }
 
     // normally used to create cuda param from a cpu param
-    ColorSpinorParam(
-        ColorSpinorParam &cpuParam, QudaInvertParam &inv_param, QudaFieldLocation location = QUDA_CUDA_FIELD_LOCATION) :
-        LatticeFieldParam(cpuParam.nDim, cpuParam.x, inv_param.sp_pad, inv_param.cuda_prec),
-        location(location),
-        nColor(cpuParam.nColor),
-        nSpin(cpuParam.nSpin),
-        nVec(cpuParam.nVec),
-        twistFlavor(cpuParam.twistFlavor),
-        siteOrder(QUDA_EVEN_ODD_SITE_ORDER),
-        fieldOrder(QUDA_INVALID_FIELD_ORDER),
-        gammaBasis(nSpin == 4 ? QUDA_UKQCD_GAMMA_BASIS : QUDA_DEGRAND_ROSSI_GAMMA_BASIS),
-        create(QUDA_COPY_FIELD_CREATE),
-        pc_type(cpuParam.pc_type),
-        v(0),
-        is_composite(cpuParam.is_composite),
-        composite_dim(cpuParam.composite_dim),
-        is_component(false),
-        component_id(0)
+    ColorSpinorParam(ColorSpinorParam &cpuParam, QudaInvertParam &inv_param,
+                     QudaFieldLocation location = QUDA_CUDA_FIELD_LOCATION) :
+      LatticeFieldParam(cpuParam.nDim, cpuParam.x, inv_param.sp_pad, inv_param.cuda_prec),
+      location(location),
+      nColor(cpuParam.nColor),
+      nSpin(cpuParam.nSpin),
+      nVec(cpuParam.nVec),
+      twistFlavor(cpuParam.twistFlavor),
+      siteOrder(QUDA_EVEN_ODD_SITE_ORDER),
+      fieldOrder(QUDA_INVALID_FIELD_ORDER),
+      gammaBasis(nSpin == 4 ? QUDA_UKQCD_GAMMA_BASIS : QUDA_DEGRAND_ROSSI_GAMMA_BASIS),
+      create(QUDA_COPY_FIELD_CREATE),
+      pc_type(cpuParam.pc_type),
+      suggested_parity(cpuParam.suggested_parity),
+      v(0),
+      is_composite(cpuParam.is_composite),
+      composite_dim(cpuParam.composite_dim),
+      is_component(false),
+      component_id(0)
     {
       siteSubset = cpuParam.siteSubset;
-      fieldOrder = (precision == QUDA_DOUBLE_PRECISION || nSpin == 1) ? QUDA_FLOAT2_FIELD_ORDER : QUDA_FLOAT4_FIELD_ORDER;
-      }
+      fieldOrder = (precision == QUDA_DOUBLE_PRECISION || nSpin == 1 || nSpin == 2) ? QUDA_FLOAT2_FIELD_ORDER : QUDA_FLOAT4_FIELD_ORDER;
+    }
 
     /**
        If using CUDA native fields, this function will ensure that the
@@ -259,6 +284,8 @@ namespace quda {
       printfQuda("fieldOrder = %d\n", fieldOrder);
       printfQuda("gammaBasis = %d\n", gammaBasis);
       printfQuda("create = %d\n", create);
+      printfQuda("pc_type = %d\n", pc_type);
+      printfQuda("suggested_parity = %d\n", suggested_parity);
       printfQuda("v = %lx\n", (unsigned long)v);
       printfQuda("norm = %lx\n", (unsigned long)norm);
       //! for deflation etc.
@@ -312,10 +339,10 @@ namespace quda {
   class ColorSpinorField : public LatticeField {
 
   private:
-      void create(int nDim, const int *x, int Nc, int Ns, int Nvec, QudaTwistFlavorType Twistflavor,
-          QudaPrecision precision, int pad, QudaSiteSubset subset, QudaSiteOrder siteOrder, QudaFieldOrder fieldOrder,
-          QudaGammaBasis gammaBasis, QudaPCType pc_type);
-      void destroy();
+    void create(int nDim, const int *x, int Nc, int Ns, int Nvec, QudaTwistFlavorType Twistflavor,
+                QudaPrecision precision, int pad, QudaSiteSubset subset, QudaSiteOrder siteOrder,
+                QudaFieldOrder fieldOrder, QudaGammaBasis gammaBasis, QudaPCType pc_type, QudaParity suggested_parity);
+    void destroy();
 
   protected:
     bool init;
@@ -330,14 +357,20 @@ namespace quda {
     int nDim;
     int x[QUDA_MAX_DIM];
 
-    int volume;
-    int volumeCB;
-    int pad;
-    int stride;
+    size_t volume;
+    size_t volumeCB;
+    size_t pad;
+    size_t stride;
 
     QudaTwistFlavorType twistFlavor;
 
     QudaPCType pc_type; // used to select preconditioning method in DWF
+
+    /** Used to specify whether a single parity field is even/odd
+     * By construction not enforced, this is more of an optional
+     * metadata to specify, for ex, if an eigensolver is for an
+     * even or odd parity. */
+    QudaParity suggested_parity;
 
     size_t real_length; // physical length only
     size_t length; // length including pads, but not ghost zone - used for BLAS
@@ -412,9 +445,9 @@ namespace quda {
     int X(int d) const { return x[d]; }
     size_t RealLength() const { return real_length; }
     size_t Length() const { return length; }
-    int Stride() const { return stride; }
-    int Volume() const { return volume; }
-    int VolumeCB() const { return siteSubset == QUDA_PARITY_SITE_SUBSET ? volume : volume / 2; }
+    size_t Stride() const { return stride; }
+    size_t Volume() const { return volume; }
+    size_t VolumeCB() const { return siteSubset == QUDA_PARITY_SITE_SUBSET ? volume : volume / 2; }
     int Pad() const { return pad; }
     size_t Bytes() const { return bytes; }
     size_t NormBytes() const { return norm_bytes; }
@@ -478,6 +511,8 @@ namespace quda {
     size_t ComponentNormBytes() const { return composite_descr.norm_bytes; }
 
     QudaPCType PCType() const { return pc_type; }
+    QudaParity SuggestedParity() const { return suggested_parity; }
+    void setSuggestedParity(QudaParity suggested_parity) { this->suggested_parity = suggested_parity; }
 
     QudaSiteSubset SiteSubset() const { return siteSubset; }
     QudaSiteOrder SiteOrder() const { return siteOrder; }
@@ -541,6 +576,16 @@ namespace quda {
     static ColorSpinorField* Create(const ColorSpinorField &src, const ColorSpinorParam &param);
 
     /**
+       @brief Create a field that aliases this field's storage.  The
+       alias field can use a different precision than this field,
+       though it cannot be greater.  This functionality is useful for
+       the case where we have multiple temporaries in different
+       precisions, but do not need them simultaneously.  Use this functionality with caution.
+       @param[in] param Parameters for the alias field
+    */
+    ColorSpinorField* CreateAlias(const ColorSpinorParam &param);
+
+    /**
        @brief Create a coarse color-spinor field, using this field to set the meta data
        @param[in] geoBlockSize Geometric block size that defines the coarse grid dimensions
        @param[in] spinlockSize Geometric block size that defines the coarse spin dimension
@@ -602,7 +647,6 @@ namespace quda {
 
     void create(const QudaFieldCreate);
     void destroy();
-    void copy(const cudaColorSpinorField &);
 
     /**
        @brief Zero the padded regions added on to the field.  Ensures
@@ -632,6 +676,8 @@ namespace quda {
     ColorSpinorField& operator=(const ColorSpinorField &);
     cudaColorSpinorField& operator=(const cudaColorSpinorField&);
     cudaColorSpinorField& operator=(const cpuColorSpinorField&);
+
+    void copy(const cudaColorSpinorField &);
 
     void switchBufferPinned();
 
@@ -965,9 +1011,6 @@ namespace quda {
   void genericPrintVector(const cpuColorSpinorField &a, unsigned int x);
   void genericCudaPrintVector(const cudaColorSpinorField &a, unsigned x);
 
-  void wuppertalStep(ColorSpinorField &out, const ColorSpinorField &in, int parity, const GaugeField& U, double A, double B);
-  void wuppertalStep(ColorSpinorField &out, const ColorSpinorField &in, int parity, const GaugeField& U, double alpha);
-
   void exchangeExtendedGhost(cudaColorSpinorField* spinor, int R[], int parity, cudaStream_t *stream_p);
 
   void copyExtendedColorSpinor(ColorSpinorField &dst, const ColorSpinorField &src,
@@ -1000,7 +1043,7 @@ namespace quda {
      @param seed Seed
      @param type The type of noise to create (QUDA_NOISE_GAUSSIAN or QUDA_NOISE_UNIFORM)
   */
-  void spinorNoise(ColorSpinorField &src, int seed, QudaNoiseType type);
+  void spinorNoise(ColorSpinorField &src, unsigned long long seed, QudaNoiseType type);
 
   /**
      @brief Helper function for determining if the preconditioning

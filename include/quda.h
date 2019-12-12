@@ -278,9 +278,10 @@ extern "C" {
     /** defines deflation */
     void *eig_param;
 
-    /**
-      Dirac Dslash used in preconditioner
-    */
+    /** If true, deflate the initial guess */
+    QudaBoolean deflate;
+
+    /** Dirac Dslash used in preconditioner */
     QudaDslashType dslash_type_precondition;
     /** Verbosity of the inner Krylov solver */
     QudaVerbosity verbosity_precondition;
@@ -393,6 +394,22 @@ extern "C" {
     double a_min;
     double a_max;
 
+    /** Whether to preserve the deflation space between solves.  If
+        true, the space will be stored in an instance of the
+        deflation_space struct, pointed to by preserve_deflation_space */
+    QudaBoolean preserve_deflation;
+
+    /** This is where we store the deflation space.  This will point
+        to an instance of deflation_space. When a deflated solver is enabled, the deflation space will be obtained from this.  */
+    void *preserve_deflation_space;
+
+    /** If we restore the deflation space, this boolean indicates
+        whether we are also preserving the evalues or recomputing
+        them.  For example if a different mass shift is being used
+        than the one used to generate the space, then this should be
+        false, but preserve_deflation would be true */
+    QudaBoolean preserve_evals;
+
     /** What type of Dirac operator we are using **/
     /** If !(use_norm_op) && !(use_dagger) use M. **/
     /** If use_dagger, use Mdag **/
@@ -424,6 +441,8 @@ extern "C" {
     int check_interval;
     /** For IRLM/IRAM, quit after n restarts **/
     int max_restarts;
+    /** For the Ritz rotation, the maximal number of extra vectors the solver may allocate **/
+    int batched_rotate;
 
     /** In the test function, cross check the device result against ARPACK **/
     QudaBoolean arpack_check;
@@ -624,19 +643,22 @@ extern "C" {
     QudaBoolean run_oblique_proj_check;
 
     /** Whether to load the null-space vectors to disk (requires QIO) */
-    QudaBoolean vec_load;
+    QudaBoolean vec_load[QUDA_MAX_MG_LEVEL];
 
     /** Filename prefix where to load the null-space vectors */
-    char vec_infile[256];
+    char vec_infile[QUDA_MAX_MG_LEVEL][256];
 
     /** Whether to store the null-space vectors to disk (requires QIO) */
-    QudaBoolean vec_store;
+    QudaBoolean vec_store[QUDA_MAX_MG_LEVEL];
+
+    /** Filename prefix for where to save the null-space vectors */
+    char vec_outfile[QUDA_MAX_MG_LEVEL][256];
 
     /** Whether to use and initial guess during coarse grid deflation */
     QudaBoolean coarse_guess;
 
-    /** Filename prefix for where to save the null-space vectors */
-    char vec_outfile[256];
+    /** Whether to preserve the deflation space during MG update */
+    QudaBoolean preserve_deflation;
 
     /** The Gflops rate of the multigrid solver setup */
     double gflops;
@@ -766,11 +788,11 @@ extern "C" {
    */
   void endQuda(void);
 
-/**
- * @brief update the radius for halos. 
- * @details This should only be needed for automated testing when
- * different partitioning is applied within a single run.
- */
+  /**
+   * @brief update the radius for halos.
+   * @details This should only be needed for automated testing when
+   * different partitioning is applied within a single run.
+   */
   void updateR();
 
   /**
@@ -964,30 +986,6 @@ extern "C" {
    */
   void dslashQuda(void *h_out, void *h_in, QudaInvertParam *inv_param,
       QudaParity parity);
-
-  /**
-   * Apply the Dslash operator (D_{eo} or D_{oe}) for 4D EO preconditioned DWF.
-   * @param h_out  Result spinor field
-   * @param h_in   Input spinor field
-   * @param param  Contains all metadata regarding host and device
-   *               storage
-   * @param parity The destination parity of the field
-   * @param test_type Choose a type of dslash operators
-   */
-  void dslashQuda_4dpc(void *h_out, void *h_in, QudaInvertParam *inv_param,
-      QudaParity parity, int test_type);
-
-  /**
-   * Apply the Dslash operator (D_{eo} or D_{oe}) for Mobius DWF.
-   * @param h_out  Result spinor field
-   * @param h_in   Input spinor field
-   * @param param  Contains all metadata regarding host and device
-   *               storage
-   * @param parity The destination parity of the field
-   * @param test_type Choose a type of dslash operators
-   */
-  void dslashQuda_mdwf(void *h_out, void *h_in, QudaInvertParam *inv_param,
-      QudaParity parity, int test_type);
 
   /**
    * Apply the clover operator or its inverse.
@@ -1194,10 +1192,17 @@ extern "C" {
                             QudaGaugeParam* param);
 
   /**
-   * Generate Gaussian distributed gauge field
-   * @param seed Seed
-   */
-  void gaussGaugeQuda(long seed);
+     @brief Generate Gaussian distributed fields and store in the
+     resident gauge field.  We create a Gaussian-distributed su(n)
+     field and exponentiate it, e.g., U = exp(sigma * H), where H is
+     the distributed su(n) field and beta is the width of the
+     distribution (beta = 0 results in a free field, and sigma = 1 has
+     maximum disorder).
+
+     @param seed The seed used for the RNG
+     @param sigma Width of Gaussian distrubution
+  */
+  void gaussGaugeQuda(unsigned long long seed, double sigma);
 
   /**
    * Computes the total, spatial and temporal plaquette averages of the loaded gauge configuration.
@@ -1213,7 +1218,7 @@ extern "C" {
   void copyExtendedResidentGaugeQuda(void* resident_gauge, QudaFieldLocation loc);
 
   /**
-   * Performs Wuppertal smearing on a given spinor using the gauge field 
+   * Performs Wuppertal smearing on a given spinor using the gauge field
    * gaugeSmeared, if it exist, or gaugePrecise if no smeared field is present.
    * @param h_out  Result spinor field
    * @param h_in   Input spinor field
@@ -1222,8 +1227,7 @@ extern "C" {
    * @param nSteps Number of steps to apply.
    * @param alpha  Alpha coefficient for Wuppertal smearing.
    */
-  void performWuppertalnStep(void *h_out, void *h_in, QudaInvertParam *param, 
-                             unsigned int nSteps, double alpha);
+  void performWuppertalnStep(void *h_out, void *h_in, QudaInvertParam *param, unsigned int nSteps, double alpha);
 
   /**
    * Performs APE smearing on gaugePrecise and stores it in gaugeSmeared

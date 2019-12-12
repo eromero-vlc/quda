@@ -19,10 +19,22 @@
 
 namespace quda {
 
-  CG::CG(DiracMatrix &mat, DiracMatrix &matSloppy, SolverParam &param, TimeProfile &profile) :
-    Solver(param, profile), mat(mat), matSloppy(matSloppy), yp(nullptr), rp(nullptr),
-    rnewp(nullptr), pp(nullptr), App(nullptr), tmpp(nullptr), tmp2p(nullptr), tmp3p(nullptr),
-    rSloppyp(nullptr), xSloppyp(nullptr), init(false)
+  CG::CG(DiracMatrix &mat, DiracMatrix &matSloppy, DiracMatrix &matPrecon, SolverParam &param, TimeProfile &profile) :
+    Solver(param, profile),
+    mat(mat),
+    matSloppy(matSloppy),
+    matPrecon(matPrecon),
+    yp(nullptr),
+    rp(nullptr),
+    rnewp(nullptr),
+    pp(nullptr),
+    App(nullptr),
+    tmpp(nullptr),
+    tmp2p(nullptr),
+    tmp3p(nullptr),
+    rSloppyp(nullptr),
+    xSloppyp(nullptr),
+    init(false)
   {
   }
 
@@ -45,20 +57,22 @@ namespace quda {
         if (tmp3p && tmpp != tmp3p && param.precision != param.precision_sloppy) delete tmp3p;
       }
       if (rnewp) delete rnewp;
-      if (deflate_init) {
-        for (auto veci : param.evecs)
-          if (veci) delete veci;
-        delete defl_tmp[0];
-      }
-
       init = false;
+
+      destroyDeflationSpace();
     }
     profile.TPSTOP(QUDA_PROFILE_FREE);
   }
 
-  CGNE::CGNE(DiracMatrix &mat, DiracMatrix &matSloppy, SolverParam &param, TimeProfile &profile) :
-    CG(mmdag, mmdagSloppy, param, profile), mmdag(mat.Expose()), mmdagSloppy(matSloppy.Expose()),
-    xp(nullptr), yp(nullptr), init(false) {
+  CGNE::CGNE(DiracMatrix &mat, DiracMatrix &matSloppy, DiracMatrix &matPrecon, SolverParam &param, TimeProfile &profile) :
+    CG(mmdag, mmdagSloppy, mmdagPrecon, param, profile),
+    mmdag(mat.Expose()),
+    mmdagSloppy(matSloppy.Expose()),
+    mmdagPrecon(matPrecon.Expose()),
+    xp(nullptr),
+    yp(nullptr),
+    init(false)
+  {
   }
 
   CGNE::~CGNE() {
@@ -138,9 +152,14 @@ namespace quda {
 
   }
 
-  CGNR::CGNR(DiracMatrix &mat, DiracMatrix &matSloppy, SolverParam &param, TimeProfile &profile) :
-    CG(mdagm, mdagmSloppy, param, profile), mdagm(mat.Expose()), mdagmSloppy(matSloppy.Expose()),
-    bp(nullptr), init(false) {
+  CGNR::CGNR(DiracMatrix &mat, DiracMatrix &matSloppy, DiracMatrix &matPrecon, SolverParam &param, TimeProfile &profile) :
+    CG(mdagm, mdagmSloppy, mdagmPrecon, param, profile),
+    mdagm(mat.Expose()),
+    mdagmSloppy(matSloppy.Expose()),
+    mdagmPrecon(matPrecon.Expose()),
+    bp(nullptr),
+    init(false)
+  {
   }
 
   CGNR::~CGNR() {
@@ -200,34 +219,6 @@ namespace quda {
       blas::axpby(-1.0, *bp, 1.0, b);
     }
 
-  }
-
-  void CG::constructDeflationSpace()
-  {
-    profile.TPSTOP(QUDA_PROFILE_INIT);
-    // Deflation requested + first instance of solver
-    eig_solve = EigenSolver::create(&param.eig_param, mat, profile);
-    profile.TPSTART(QUDA_PROFILE_INIT);
-
-    // Clone from an existing vector
-    ColorSpinorParam csParam(*rp);
-    csParam.create = QUDA_ZERO_FIELD_CREATE;
-    // This is the vector precision used by matResidual
-    csParam.setPrecision(param.precision_sloppy, QUDA_INVALID_PRECISION, true);
-    param.evecs.resize(param.eig_param.nKr);
-    for (int i = 0; i < param.eig_param.nKr; i++) param.evecs[i] = ColorSpinorField::Create(csParam);
-
-    // Construct vectors to hold deflated RHS
-    defl_tmp.push_back(ColorSpinorField::Create(csParam));
-
-    param.evals.resize(param.eig_param.nEv);
-    for (int i = 0; i < param.eig_param.nEv; i++) param.evals[i] = 0.0;
-
-    profile.TPSTOP(QUDA_PROFILE_INIT);
-    (*eig_solve)(param.evecs, param.evals);
-    profile.TPSTART(QUDA_PROFILE_INIT);
-
-    deflate_init = true;
   }
 
   void CG::operator()(ColorSpinorField &x, ColorSpinorField &b, ColorSpinorField *p_init, double r2_old_init)
@@ -296,9 +287,21 @@ namespace quda {
       init = true;
     }
 
-    // Once the CG operator is called, we are able to construct an appropriate
-    // Krylov space for deflation
-    if (param.deflate && !deflate_init) { constructDeflationSpace(); }
+    if (param.deflate) {
+      // Construct the eigensolver and deflation space if requested.
+      constructDeflationSpace(b, matPrecon);
+      if (deflate_compute) {
+        // compute the deflation space.
+        profile.TPSTOP(QUDA_PROFILE_INIT);
+        (*eig_solve)(evecs, evals);
+        profile.TPSTART(QUDA_PROFILE_INIT);
+        deflate_compute = false;
+      }
+      if (recompute_evals) {
+        eig_solve->computeEvals(matPrecon, evecs, evals);
+        recompute_evals = false;
+      }
+    }
 
     ColorSpinorField &r = *rp;
     ColorSpinorField &y = *yp;
@@ -324,8 +327,13 @@ namespace quda {
     // alternative reliable updates
     // alternative reliable updates - set precision - does not hurt performance here
 
-    const double u = param.precision_sloppy == 8 ? std::numeric_limits<double>::epsilon()/2. : ((param.precision_sloppy == 4) ? std::numeric_limits<float>::epsilon()/2. : pow(2.,-13));
-    const double uhigh= param.precision == 8 ? std::numeric_limits<double>::epsilon()/2. : ((param.precision == 4) ? std::numeric_limits<float>::epsilon()/2. : pow(2.,-13));
+    const double u = param.precision_sloppy == 8 ?
+      std::numeric_limits<double>::epsilon() / 2. :
+      param.precision_sloppy == 4 ? std::numeric_limits<float>::epsilon() / 2. :
+                                    param.precision_sloppy == 2 ? pow(2., -13) : pow(2., -6);
+    const double uhigh = param.precision == 8 ? std::numeric_limits<double>::epsilon() / 2. :
+                                                param.precision == 4 ? std::numeric_limits<float>::epsilon() / 2. :
+                                                                       param.precision == 2 ? pow(2., -13) : pow(2., -6);
     const double deps=sqrt(u);
     constexpr double dfac = 1.1;
     double d_new = 0;
@@ -360,27 +368,11 @@ namespace quda {
       blas::zero(y);
     }
 
-    if (param.deflate == true) {
-      std::vector<ColorSpinorField *> rhs;
-      // Use residual from supplied guess r, or original
-      // rhs b. use `x` as a temp.
-      blas::copy(x, r);
-      rhs.push_back(&x);
-
-      // Deflate
-      eig_solve->deflate(defl_tmp, rhs, param.evecs, param.evals);
-
-      // Compute r_defl = RHS - A * LHS
-      mat(r, *defl_tmp[0], tmp2, tmp3);
-      r2 = blas::xmyNorm(*rhs[0], r);
-
-      if (param.use_init_guess == QUDA_USE_INIT_GUESS_YES) {
-        // defl_tmp1 and y must be added to the solution at the end
-        blas::axpy(1.0, *defl_tmp[0], y);
-      } else {
-        // Just add defl_tmp to y, which has been zeroed out
-        blas::copy(y, *defl_tmp[0]);
-      }
+    if (param.deflate && param.maxiter > 1) {
+      // Deflate and accumulate to solution vector
+      eig_solve->deflate(y, r, evecs, evals, true);
+      mat(r, y, x, tmp3);
+      r2 = blas::xmyNorm(b, r);
     }
 
     blas::zero(x);
@@ -433,6 +425,7 @@ namespace quda {
     double r0Norm = rNorm;
     double maxrx = rNorm;
     double maxrr = rNorm;
+    double maxr_deflate = rNorm; // The maximum residual since the last deflation
     double delta = param.delta;
 
     // this parameter determines how many consective reliable update
@@ -454,6 +447,7 @@ namespace quda {
     // set this to true if maxResIncrease has been exceeded but when we use heavy quark residual we still want to continue the CG
     // only used if we use the heavy_quark_res
     bool L2breakdown = false;
+    const double L2breakdown_eps = 100. * uhigh;
 
     profile.TPSTOP(QUDA_PROFILE_PREAMBLE);
     profile.TPSTART(QUDA_PROFILE_COMPUTE);
@@ -614,6 +608,17 @@ namespace quda {
         mat(r, y, x, tmp3); //  here we can use x as tmp
         r2 = blas::xmyNorm(b, r);
 
+        if (param.deflate && sqrt(r2) < maxr_deflate * param.tol_restart) {
+          // Deflate and accumulate to solution vector
+          eig_solve->deflate(y, r, evecs, evals, true);
+
+          // Compute r_defl = RHS - A * LHS
+          mat(r, y, x, tmp3);
+          r2 = blas::xmyNorm(b, r);
+
+          maxr_deflate = sqrt(r2);
+        }
+
         blas::copy(rSloppy, r); //nop when these pointers alias
         blas::zero(xSloppy);
 
@@ -641,12 +646,17 @@ namespace quda {
           warningQuda(
             "CG: new reliable residual norm %e is greater than previous reliable residual norm %e (total #inc %i)",
             sqrt(r2), r0Norm, resIncreaseTotal);
-          if (resIncrease > maxResIncrease or resIncreaseTotal > maxResIncreaseTotal or r2 < stop) {
+
+          if ((use_heavy_quark_res and sqrt(r2) < L2breakdown_eps) or resIncrease > maxResIncrease
+              or resIncreaseTotal > maxResIncreaseTotal or r2 < stop) {
             if (use_heavy_quark_res) {
               L2breakdown = true;
+              warningQuda("CG: L2 breakdown %e, %e", sqrt(r2), L2breakdown_eps);
             } else {
-              warningQuda("CG: solver exiting due to too many true residual norm increases");
-              break;
+              if (resIncrease > maxResIncrease or resIncreaseTotal > maxResIncreaseTotal or r2 < stop) {
+                warningQuda("CG: solver exiting due to too many true residual norm increases");
+                break;
+              }
             }
           }
         } else {
@@ -667,7 +677,8 @@ namespace quda {
                         heavy_quark_res, heavy_quark_res_old);
             // break out if we do not improve here anymore
             if (hqresIncrease > hqmaxresIncrease) {
-              warningQuda("CG: solver exiting due to too many heavy quark residual norm increases");
+              warningQuda("CG: solver exiting due to too many heavy quark residual norm increases (%i/%i)",
+                          hqresIncrease, hqmaxresIncrease);
               break;
             }
           } else {
@@ -675,7 +686,8 @@ namespace quda {
           }
 
           if (hqresRestartTotal > hqmaxresRestartTotal) {
-            warningQuda("CG: solver exiting due to too many heavy quark residual restarts");
+            warningQuda("CG: solver exiting due to too many heavy quark residual restarts (%i/%i)", hqresRestartTotal,
+                        hqmaxresRestartTotal);
             break;
           }
         }
@@ -738,7 +750,7 @@ namespace quda {
     profile.TPSTART(QUDA_PROFILE_EPILOGUE);
 
     param.secs = profile.Last(QUDA_PROFILE_COMPUTE);
-    double gflops = (blas::flops + mat.flops() + matSloppy.flops())*1e-9;
+    double gflops = (blas::flops + mat.flops() + matSloppy.flops() + matPrecon.flops()) * 1e-9;
     param.gflops = gflops;
     param.iter += k;
 
@@ -761,6 +773,7 @@ namespace quda {
     blas::flops = 0;
     mat.flops();
     matSloppy.flops();
+    matPrecon.flops();
 
     profile.TPSTOP(QUDA_PROFILE_EPILOGUE);
 

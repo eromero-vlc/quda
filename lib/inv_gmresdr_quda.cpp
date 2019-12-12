@@ -214,8 +214,8 @@ namespace quda {
  {
      fillFGMResDRInnerSolveParam(Kparam, param);
 
-     if (param.inv_type_precondition == QUDA_CG_INVERTER) 
-       K = new CG(matPrecon, matPrecon, Kparam, profile);
+     if (param.inv_type_precondition == QUDA_CG_INVERTER)
+       K = new CG(matPrecon, matPrecon, matPrecon, Kparam, profile);
      else if (param.inv_type_precondition == QUDA_BICGSTAB_INVERTER) 
        K = new BiCGstab(matPrecon, matPrecon, matPrecon, Kparam, profile);
      else if (param.inv_type_precondition == QUDA_MR_INVERTER) 
@@ -432,13 +432,13 @@ int GMResDR::FlexArnoldiProcedure(const int start_idx, const bool do_givens = fa
    {
      Map<MatrixXcd, Unaligned, DynamicStride> givensH_(givensH.get(), args.m, args.m, DynamicStride(args.m+1,1) );
      memcpy(args.eta.data(),  args.c, args.m*sizeof(Complex));
-     memset(args.c, 0, (args.m+1)*sizeof(Complex));
+     memset((void *)args.c, 0, (args.m + 1) * sizeof(Complex));
      args.c[0] = c0;
 
      givensH_.triangularView<Upper>().solveInPlace<OnTheLeft>(args.eta);
 
    } else {
-     memset(args.c, 0, (args.m+1)*sizeof(Complex));
+     memset((void *)args.c, 0, (args.m + 1) * sizeof(Complex));
 
      std::vector<ColorSpinorField*> v_(Vm->Components().begin(), Vm->Components().begin()+args.k+1);
      std::vector<ColorSpinorField*> r_;

@@ -29,14 +29,12 @@ namespace quda {
 
     create(param.create);
 
-    if  (param.create == QUDA_NULL_FIELD_CREATE) {
-      // do nothing
-    } else if (param.create == QUDA_ZERO_FIELD_CREATE) {
-      zero();
-    } else if (param.create == QUDA_REFERENCE_FIELD_CREATE) {
-      // do nothing
-    } else if (param.create == QUDA_COPY_FIELD_CREATE) {
-      errorQuda("not implemented");
+    switch (param.create) {
+    case QUDA_NULL_FIELD_CREATE:
+    case QUDA_REFERENCE_FIELD_CREATE: break; // do nothing;
+    case QUDA_ZERO_FIELD_CREATE: zero(); break;
+    case QUDA_COPY_FIELD_CREATE: errorQuda("Copy field create not implemented for this constructor");
+    default: errorQuda("Unexpected create type %d", param.create);
     }
   }
 
@@ -246,7 +244,6 @@ namespace quda {
       {
          if(composite_descr.dim <= 0) errorQuda("\nComposite size is not defined\n");
          //if(bytes > 1811939328) warningQuda("\nCUDA API probably won't be able to create texture object for the eigenvector set... Object size is : %u bytes\n", bytes);
-         if (getVerbosity() == QUDA_DEBUG_VERBOSE) printfQuda("\nEigenvector set constructor...\n");
          // create the associated even and odd subsets
          ColorSpinorParam param;
          param.siteSubset = QUDA_PARITY_SITE_SUBSET;
@@ -418,12 +415,12 @@ namespace quda {
 
         if (!is_aligned(resDesc.res.linear.devPtr, deviceProp.textureAlignment)) {
           errorQuda("Allocation size %lu does not have correct alignment for textures (%lu)",
-        	    resDesc.res.linear.sizeInBytes, deviceProp.textureAlignment);
+                    resDesc.res.linear.sizeInBytes, deviceProp.textureAlignment);
         }
 
-	cudaTextureDesc texDesc;
-	memset(&texDesc, 0, sizeof(texDesc));
-	if (ghost_precision == QUDA_HALF_PRECISION || ghost_precision == QUDA_QUARTER_PRECISION) texDesc.readMode = cudaReadModeNormalizedFloat;
+        cudaTextureDesc texDesc;
+        memset(&texDesc, 0, sizeof(texDesc));
+        if (ghost_precision == QUDA_HALF_PRECISION || ghost_precision == QUDA_QUARTER_PRECISION) texDesc.readMode = cudaReadModeNormalizedFloat;
 	else texDesc.readMode = cudaReadModeElementType;
 
 	cudaCreateTextureObject(&ghostTex[b], &resDesc, &texDesc, NULL);
@@ -432,12 +429,12 @@ namespace quda {
 	resDesc.res.linear.devPtr = ghost_pinned_recv_buffer_hd[b];
         if (!is_aligned(resDesc.res.linear.devPtr, deviceProp.textureAlignment)) {
           errorQuda("Allocation size %lu does not have correct alignment for textures (%lu)",
-        	    resDesc.res.linear.sizeInBytes, deviceProp.textureAlignment);
+                    resDesc.res.linear.sizeInBytes, deviceProp.textureAlignment);
         }
-	cudaCreateTextureObject(&ghostTex[2+b], &resDesc, &texDesc, NULL);
+        cudaCreateTextureObject(&ghostTex[2 + b], &resDesc, &texDesc, NULL);
 
-	if (ghost_precision == QUDA_HALF_PRECISION || ghost_precision == QUDA_QUARTER_PRECISION) {
-	  cudaChannelFormatDesc desc;
+        if (ghost_precision == QUDA_HALF_PRECISION || ghost_precision == QUDA_QUARTER_PRECISION) {
+          cudaChannelFormatDesc desc;
 	  memset(&desc, 0, sizeof(cudaChannelFormatDesc));
 	  desc.f = cudaChannelFormatKindFloat;
 	  desc.x = 8*QUDA_SINGLE_PRECISION; desc.y = 0; desc.z = 0; desc.w = 0;
@@ -455,21 +452,21 @@ namespace quda {
           }
 
           cudaTextureDesc texDesc;
-	  memset(&texDesc, 0, sizeof(texDesc));
-	  texDesc.readMode = cudaReadModeElementType;
+          memset(&texDesc, 0, sizeof(texDesc));
+          texDesc.readMode = cudaReadModeElementType;
 
-	  cudaCreateTextureObject(&ghostTexNorm[b], &resDesc, &texDesc, NULL);
+          cudaCreateTextureObject(&ghostTexNorm[b], &resDesc, &texDesc, NULL);
 
 	  resDesc.res.linear.devPtr = ghost_pinned_recv_buffer_hd[b];
           if (!is_aligned(resDesc.res.linear.devPtr, deviceProp.textureAlignment)) {
             errorQuda("Allocation size %lu does not have correct alignment for textures (%lu)",
                       resDesc.res.linear.sizeInBytes, deviceProp.textureAlignment);
           }
-          cudaCreateTextureObject(&ghostTexNorm[2+b], &resDesc, &texDesc, NULL);
+          cudaCreateTextureObject(&ghostTexNorm[2 + b], &resDesc, &texDesc, NULL);
         }
 
         ghost_field_tex[b] = ghost_recv_buffer_d[b];
-	ghost_field_tex[2+b] = ghost_pinned_recv_buffer_hd[b];
+        ghost_field_tex[2 + b] = ghost_pinned_recv_buffer_hd[b];
       } // buffer index
 
       ghostTexInit = true;
@@ -565,8 +562,9 @@ namespace quda {
   // cuda's floating point format, IEEE-754, represents the floating point
   // zero as 4 zero bytes
   void cudaColorSpinorField::zero() {
-    cudaMemsetAsync(v, 0, bytes);
-    if (precision == QUDA_HALF_PRECISION || precision == QUDA_QUARTER_PRECISION) cudaMemsetAsync(norm, 0, norm_bytes);
+    qudaMemsetAsync(v, 0, bytes, 0);
+    if (precision == QUDA_HALF_PRECISION || precision == QUDA_QUARTER_PRECISION)
+      qudaMemsetAsync(norm, 0, norm_bytes, 0);
   }
 
   void cudaColorSpinorField::zeroPad() {
@@ -592,7 +590,7 @@ namespace quda {
       size_t pad_bytes = (stride - volumeCB) * sizeof(float);
       if (pad_bytes)
         for (int subset=0; subset<siteSubset; subset++) {
-          cudaMemsetAsync((char*)norm + volumeCB*sizeof(float), 0, (stride-volumeCB)*sizeof(float));
+          qudaMemsetAsync((char *)norm + volumeCB * sizeof(float), 0, (stride - volumeCB) * sizeof(float), 0);
         }
     }
 
@@ -601,8 +599,8 @@ namespace quda {
       size_t subset_bytes = bytes/siteSubset;
       size_t subset_length = length/siteSubset;
       for (int subset=0; subset < siteSubset; subset++) {
-        cudaMemsetAsync((char*)v + subset_length*precision + subset_bytes*subset, 0,
-                        subset_bytes-subset_length*precision);
+        qudaMemsetAsync((char *)v + subset_length * precision + subset_bytes * subset, 0,
+                        subset_bytes - subset_length * precision, 0);
       }
     }
 
@@ -610,35 +608,30 @@ namespace quda {
     if (norm_bytes && norm_bytes != siteSubset*stride*sizeof(float)) {
       size_t subset_bytes = norm_bytes/siteSubset;
       for (int subset=0; subset < siteSubset; subset++) {
-        cudaMemsetAsync((char*)norm + (size_t)stride*sizeof(float) + subset_bytes*subset, 0,
-                        subset_bytes-(size_t)stride*sizeof(float));
+        qudaMemsetAsync((char *)norm + (size_t)stride * sizeof(float) + subset_bytes * subset, 0,
+                        subset_bytes - (size_t)stride * sizeof(float), 0);
       }
     }
 
     checkCudaError();
   }
 
-  void cudaColorSpinorField::copy(const cudaColorSpinorField &src) {
+  void cudaColorSpinorField::copy(const cudaColorSpinorField &src)
+  {
     checkField(*this, src);
-    if (this->GammaBasis() != src.GammaBasis()) errorQuda("cannot call this copy with different basis");
-    blas::copy(*this, src);
+    copyGenericColorSpinor(*this, src, QUDA_CUDA_FIELD_LOCATION);
   }
 
-  void cudaColorSpinorField::copySpinorField(const ColorSpinorField &src) {
-    
-    // src is on the device and is native
-    if (typeid(src) == typeid(cudaColorSpinorField) && 
-	isNative() && dynamic_cast<const cudaColorSpinorField &>(src).isNative() &&
-	this->GammaBasis() == src.GammaBasis()) {
-      copy(dynamic_cast<const cudaColorSpinorField&>(src));
-    } else if (typeid(src) == typeid(cudaColorSpinorField)) {
+  void cudaColorSpinorField::copySpinorField(const ColorSpinorField &src)
+  {
+    if (typeid(src) == typeid(cudaColorSpinorField)) { // src is on the device
       copyGenericColorSpinor(*this, src, QUDA_CUDA_FIELD_LOCATION);
     } else if (typeid(src) == typeid(cpuColorSpinorField)) { // src is on the host
       loadSpinorField(src);
     } else {
       errorQuda("Unknown input ColorSpinorField %s", typeid(src).name());
     }
-  } 
+  }
 
   void cudaColorSpinorField::loadSpinorField(const ColorSpinorField &src) {
 
@@ -679,7 +672,7 @@ namespace quda {
           srcNorm = static_cast<char*>(Src) + src.Bytes();
         }
 
-        cudaMemset(v, 0, bytes); // FIXME (temporary?) bug fix for padding
+        qudaMemsetAsync(v, 0, bytes, 0); // FIXME (temporary?) bug fix for padding
         copyGenericColorSpinor(*this, src, QUDA_CUDA_FIELD_LOCATION, 0, Src, 0, srcNorm);
 
         if (zeroCopy) pool_pinned_free(buffer);
@@ -784,12 +777,7 @@ namespace quda {
       }
     }
 
-#ifdef USE_LEGACY_DSLASH
-    const int face_num = (dir == QUDA_BACKWARDS) ? 0 : (dir == QUDA_FORWARDS) ? 1 : 2;
-    packFace(packBuffer, *this, location_label, nFace, dagger, parity, dim, face_num, *stream, a, b);
-#else
     PackGhost(packBuffer, *this, location_label, nFace, dagger, parity, spin_project, a, b, c, *stream);
-#endif
 
 #else
     errorQuda("packGhost not built on single-GPU build");

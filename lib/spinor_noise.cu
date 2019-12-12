@@ -172,11 +172,23 @@ namespace quda {
   void spinorNoise(ColorSpinorField &src, RNG& randstates, QudaNoiseType type)
   {
     if (src.Nspin() == 4) {
+#ifdef NSPIN4
       spinorNoise<real,4>(src, randstates, type);
+#else
+      errorQuda("spinorNoise has not been built for Nspin=%d fields", src.Nspin());
+#endif
     } else if (src.Nspin() == 2) {
+#ifdef NSPIN2
       spinorNoise<real,2>(src, randstates, type);
+#else
+      errorQuda("spinorNoise has not been built for Nspin=%d fields", src.Nspin());
+#endif
     } else if (src.Nspin() == 1) {
+#ifdef NSPIN1
       spinorNoise<real,1>(src, randstates, type);
+#else
+      errorQuda("spinorNoise has not been built for Nspin=%d fields", src.Nspin());
+#endif
     } else {
       errorQuda("Nspin = %d not implemented", src.Nspin());
     }
@@ -207,9 +219,9 @@ namespace quda {
     }
   }
 
-  void spinorNoise(ColorSpinorField &src, int seed, QudaNoiseType type)
+  void spinorNoise(ColorSpinorField &src, unsigned long long seed, QudaNoiseType type)
   {
-    RNG* randstates = new RNG(src.Volume(), seed, src.X());
+    RNG *randstates = new RNG(src, seed);
     randstates->Init();
     spinorNoise(src, *randstates, type);
     randstates->Release();

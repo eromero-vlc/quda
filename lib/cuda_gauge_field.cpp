@@ -148,7 +148,7 @@ namespace quda {
       if (resDesc.res.linear.sizeInBytes % deviceProp.textureAlignment != 0
           || !is_aligned(resDesc.res.linear.devPtr, deviceProp.textureAlignment)) {
         errorQuda("Allocation size %lu does not have correct alignment for textures (%lu)",
-		  resDesc.res.linear.sizeInBytes, deviceProp.textureAlignment);
+                  resDesc.res.linear.sizeInBytes, deviceProp.textureAlignment);
       }
 
       unsigned long texels = resDesc.res.linear.sizeInBytes / texel_size;
@@ -522,7 +522,7 @@ namespace quda {
 
       // silence cuda-memcheck initcheck errors that arise since we
       // have an oversized ghost buffer when doing the extended exchange
-      cudaMemsetAsync(send_d[dim], 0, 2*ghost_face_bytes[dim]);
+      qudaMemsetAsync(send_d[dim], 0, 2 * ghost_face_bytes[dim], 0);
       offset += 2*ghost_face_bytes[dim]; // factor of two from fwd/back
     }
 
@@ -840,9 +840,6 @@ namespace quda {
     backed_up = false;
   }
 
-  void cudaGaugeField::zero() {
-    cudaMemset(gauge, 0, bytes);
-  }
-
+  void cudaGaugeField::zero() { qudaMemset(gauge, 0, bytes); }
 
 } // namespace quda

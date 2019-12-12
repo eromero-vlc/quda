@@ -73,7 +73,7 @@ namespace quda
       }
     }
 
-    rng = new RNG(param.B[0]->Volume(), 1234, param.B[0]->X());
+    rng = new RNG(*param.B[0], 1234);
     rng->Init();
 
     if (param.level < param.Nlevel-1) {
@@ -84,11 +84,11 @@ namespace quda
           for(int i=0; i<(int)param.B.size(); i++) {
             spinorNoise(*r, *rng, QUDA_NOISE_UNIFORM);
             *param.B[i] = *r;
-            param.evals.push_back(0.0);
           }
         }
         if (param.mg_global.num_setup_iter[param.level] > 0) {
-          if (strcmp(param.mg_global.vec_infile, "") != 0) { // only load if infile is defined and not computing
+          if (strcmp(param.mg_global.vec_infile[param.level], "")
+              != 0) { // only load if infile is defined and not computing
             loadVectors(param.B);
           } else if (param.mg_global.use_eig_solver[param.level]) {
             generateEigenVectors(); // Run the eigensolver
@@ -96,9 +96,10 @@ namespace quda
             generateNullVectors(param.B);
           }
         }
-      } else if (strcmp(param.mg_global.vec_infile, "") != 0) { // only load if infile is defined and not computing
+      } else if (strcmp(param.mg_global.vec_infile[param.level], "")
+                 != 0) { // only load if infile is defined and not computing
         if ( param.mg_global.num_setup_iter[param.level] > 0 ) generateNullVectors(param.B);
-      } else if (param.mg_global.vec_load == QUDA_BOOLEAN_YES) { // only conditional load of null vectors
+      } else if (param.mg_global.vec_load[param.level] == QUDA_BOOLEAN_YES) { // only conditional load of null vectors
 
         loadVectors(param.B);
       } else { // generate free field vectors
@@ -115,7 +116,7 @@ namespace quda
   void MG::reset(bool refresh) {
     pushLevel(param.level);
 
-    if (getVerbosity() >= QUDA_SUMMARIZE) printfQuda("%s level %d\n", transfer ? "Resetting" : "Creating", param.level);
+    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("%s level %d\n", transfer ? "Resetting" : "Creating", param.level);
 
     destroySmoother();
     destroyCoarseSolver();
@@ -161,9 +162,7 @@ namespace quda
         x_coarse = param.B[0]->CreateCoarse(param.geoBlockSize, param.spinBlockSize, param.Nvec, r->Precision(), param.mg_global.location[param.level+1]);
 
         B_coarse = new std::vector<ColorSpinorField*>();
-        int nVec_coarse
-          = (param.level == param.Nlevel - 2 ? param.mg_global.n_vec[param.level + 1] :
-                                               std::max(param.Nvec, param.mg_global.n_vec[param.level + 1]));
+        int nVec_coarse = std::max(param.Nvec, param.mg_global.n_vec[param.level + 1]);
         B_coarse->resize(nVec_coarse);
 
         // only have single precision B vectors on the coarse grid
@@ -200,8 +199,8 @@ namespace quda
         coarse->reset(refresh);
       } else {
         // create the next multigrid level
-        param_coarse = new MGParam(param, *B_coarse, param.evals, matCoarseResidual, matCoarseSmoother,
-                                   matCoarseSmootherSloppy, param.level + 1);
+        param_coarse = new MGParam(param, *B_coarse, matCoarseResidual, matCoarseSmoother, matCoarseSmootherSloppy,
+                                   param.level + 1);
         param_coarse->fine = this;
         param_coarse->delta = 1e-20;
         param_coarse->precision = param.mg_global.invert_param->cuda_prec_precondition;
@@ -211,15 +210,6 @@ namespace quda
       setOutputPrefix(prefix); // restore since we just popped back from coarse grid
 
       createCoarseSolver();
-
-      if (param.level == param.Nlevel - 2 && param.mg_global.use_eig_solver[param.level + 1]) {
-        // if we are deflating the coarsest grid, then run a dummy solve
-        // so that the deflation is done during the setup
-        spinorNoise(*r_coarse, *coarse->rng, QUDA_NOISE_UNIFORM);
-        param_coarse_solver->maxiter = 1; // do a single iteration on the dummy solve
-        (*coarse_solver)(*x_coarse, *r_coarse);
-        param_coarse_solver->maxiter = param.mg_global.coarse_solver_maxiter[param.level + 1];
-      }
     }
 
     if (param.level == 0) {
@@ -227,7 +217,7 @@ namespace quda
       if (param.mg_global.run_verify) verify();
     }
 
-    if (getVerbosity() >= QUDA_SUMMARIZE) printfQuda("Setup of level %d done\n", param.level);
+    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Setup of level %d done\n", param.level);
 
     popLevel(param.level);
   }
@@ -409,6 +399,14 @@ namespace quda
       // nothing to do
     } else if (param.cycle_type == QUDA_MG_CYCLE_RECURSIVE || param.level == param.Nlevel-2) {
       if (coarse_solver) {
+        auto &coarse_solver_inner = reinterpret_cast<PreconditionedSolver *>(coarse_solver)->ExposeSolver();
+        // int defl_size = coarse_solver_inner.evecs.size();
+        int defl_size = coarse_solver_inner.deflationSpaceSize();
+        if (defl_size > 0 && transfer && param.mg_global.preserve_deflation) {
+          // Deflation space exists and we are going to create a new solver. Extract deflation space.
+          if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Extracting deflation space size %d to MG\n", defl_size);
+          coarse_solver_inner.extractDeflationSpace(evecs);
+        }
         delete coarse_solver;
         coarse_solver = nullptr;
       }
@@ -443,7 +441,9 @@ namespace quda
       param_coarse_solver->return_residual = false; // coarse solver does need to return residual vector
 
       param_coarse_solver->use_init_guess = QUDA_USE_INIT_GUESS_NO;
-      if (param.mg_global.use_eig_solver[param.Nlevel - 1]) {
+      // Coarse level deflation is triggered if the eig param structure exists
+      // on the coarsest level, and we are on the next to coarsest level.
+      if (param.mg_global.use_eig_solver[param.Nlevel - 1] && (param.level == param.Nlevel - 2)) {
         param_coarse_solver->eig_param = *param.mg_global.eig_param[param.Nlevel - 1];
         param_coarse_solver->deflate = QUDA_BOOLEAN_YES;
         // Due to coherence between these levels, an initial guess
@@ -452,9 +452,18 @@ namespace quda
           param_coarse_solver->use_init_guess = QUDA_USE_INIT_GUESS_YES;
         }
 
+        // Deflation on the coarse is supported for 6 solvers only
+        if (param_coarse_solver->inv_type != QUDA_CA_CGNR_INVERTER && param_coarse_solver->inv_type != QUDA_CGNR_INVERTER
+            && param_coarse_solver->inv_type != QUDA_CA_CGNE_INVERTER
+            && param_coarse_solver->inv_type != QUDA_CGNE_INVERTER && param_coarse_solver->inv_type != QUDA_CA_GCR_INVERTER
+            && param_coarse_solver->inv_type != QUDA_GCR_INVERTER) {
+          errorQuda("Coarse grid deflation not supported with coarse solver %d", param_coarse_solver->inv_type);
+        }
+
         if (strcmp(param_coarse_solver->eig_param.vec_infile, "") == 0 && // check that input file not already set
-            param.mg_global.vec_load == QUDA_BOOLEAN_YES && (strcmp(param.mg_global.vec_infile, "") != 0)) {
-          std::string vec_infile(param.mg_global.vec_infile);
+            param.mg_global.vec_load[param.level + 1] == QUDA_BOOLEAN_YES
+            && (strcmp(param.mg_global.vec_infile[param.level + 1], "") != 0)) {
+          std::string vec_infile(param.mg_global.vec_infile[param.level + 1]);
           vec_infile += "_level_";
           vec_infile += std::to_string(param.level + 1);
           vec_infile += "_defl_";
@@ -463,8 +472,9 @@ namespace quda
         }
 
         if (strcmp(param_coarse_solver->eig_param.vec_outfile, "") == 0 && // check that output file not already set
-            param.mg_global.vec_store == QUDA_BOOLEAN_YES && (strcmp(param.mg_global.vec_outfile, "") != 0)) {
-          std::string vec_outfile(param.mg_global.vec_infile);
+            param.mg_global.vec_store[param.level + 1] == QUDA_BOOLEAN_YES
+            && (strcmp(param.mg_global.vec_outfile[param.level + 1], "") != 0)) {
+          std::string vec_outfile(param.mg_global.vec_outfile[param.level + 1]);
           vec_outfile += "_level_";
           vec_outfile += std::to_string(param.level + 1);
           vec_outfile += "_defl_";
@@ -472,6 +482,7 @@ namespace quda
           strcpy(param_coarse_solver->eig_param.vec_outfile, vec_outfile.c_str());
         }
       }
+
       param_coarse_solver->tol = param.mg_global.coarse_solver_tol[param.level+1];
       param_coarse_solver->global_reduction = true;
       param_coarse_solver->compute_true_res = false;
@@ -499,16 +510,46 @@ namespace quda
       param_coarse_solver->precision_sloppy = param_coarse_solver->precision;
       param_coarse_solver->precision_precondition = param_coarse_solver->precision_sloppy;
 
-      if (param.mg_global.coarse_grid_solution_type[param.level+1] == QUDA_MATPC_SOLUTION) {
-	Solver *solver = Solver::create(*param_coarse_solver, *matCoarseSmoother, *matCoarseSmoother, *matCoarseSmoother, profile);
+      if (param.mg_global.coarse_grid_solution_type[param.level + 1] == QUDA_MATPC_SOLUTION) {
+        Solver *solver
+          = Solver::create(*param_coarse_solver, *matCoarseSmoother, *matCoarseSmoother, *matCoarseSmoother, profile);
         sprintf(coarse_prefix, "MG level %d (%s): ", param.level + 1,
                 param.mg_global.location[param.level + 1] == QUDA_CUDA_FIELD_LOCATION ? "GPU" : "CPU");
-        coarse_solver = new PreconditionedSolver(*solver, *matCoarseSmoother->Expose(), *param_coarse_solver, profile, coarse_prefix);
+        coarse_solver = new PreconditionedSolver(*solver, *matCoarseSmoother->Expose(), *param_coarse_solver, profile,
+                                                 coarse_prefix);
       } else {
-	Solver *solver = Solver::create(*param_coarse_solver, *matCoarseResidual, *matCoarseResidual, *matCoarseResidual, profile);
+        Solver *solver
+          = Solver::create(*param_coarse_solver, *matCoarseResidual, *matCoarseResidual, *matCoarseResidual, profile);
         sprintf(coarse_prefix, "MG level %d (%s): ", param.level + 1,
                 param.mg_global.location[param.level + 1] == QUDA_CUDA_FIELD_LOCATION ? "GPU" : "CPU");
         coarse_solver = new PreconditionedSolver(*solver, *matCoarseResidual->Expose(), *param_coarse_solver, profile, coarse_prefix);
+      }
+
+      setOutputPrefix(prefix); // restore since we just popped back from coarse grid
+
+      if (param.level == param.Nlevel - 2 && param.mg_global.use_eig_solver[param.level + 1]) {
+
+        // Test if a coarse grid deflation space needs to be transferred to the coarse solver to prevent recomputation
+        int defl_size = evecs.size();
+        auto &coarse_solver_inner = reinterpret_cast<PreconditionedSolver *>(coarse_solver)->ExposeSolver();
+        if (defl_size > 0 && transfer && param.mg_global.preserve_deflation) {
+          // We shall not recompute the deflation space, we shall transfer
+          // vectors stored in the parent MG instead
+          coarse_solver_inner.setDeflateCompute(false);
+          coarse_solver_inner.setRecomputeEvals(true);
+          if (getVerbosity() >= QUDA_VERBOSE)
+            printfQuda("Transferring deflation space size %d to coarse solver\n", defl_size);
+          // Create space in coarse solver to hold deflation space, destroy space in MG.
+          coarse_solver_inner.injectDeflationSpace(evecs);
+        }
+
+        // Run a dummy solve so that the deflation space is constructed and computed if needed during the MG setup,
+        // or the eigenvalues are recomputed during transfer.
+        spinorNoise(*r_coarse, *coarse->rng, QUDA_NOISE_UNIFORM);
+        param_coarse_solver->maxiter = 1; // do a single iteration on the dummy solve
+        (*coarse_solver)(*x_coarse, *r_coarse);
+        setOutputPrefix(prefix); // restore since we just popped back from coarse grid
+        param_coarse_solver->maxiter = param.mg_global.coarse_solver_maxiter[param.level + 1];
       }
 
       if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Assigned coarse solver to preconditioned GCR solver\n");
@@ -532,9 +573,7 @@ namespace quda
       }
 
       if (B_coarse) {
-        int nVec_coarse
-          = (param.level == param.Nlevel - 2 ? param.mg_global.n_vec[param.level + 1] :
-                                               std::max(param.Nvec, param.mg_global.n_vec[param.level + 1]));
+        int nVec_coarse = std::max(param.Nvec, param.mg_global.n_vec[param.level + 1]);
         for (int i = 0; i < nVec_coarse; i++)
           if ((*B_coarse)[i]) delete (*B_coarse)[i];
         delete B_coarse;
@@ -757,7 +796,7 @@ namespace quda
     if (param.coarse_grid_solution_type == QUDA_MATPC_SOLUTION && param.smoother_solve_type == QUDA_DIRECT_PC_SOLVE) {
       // check eo
       if (getVerbosity() >= QUDA_SUMMARIZE)
-        printfQuda("Checking Doe of preconditioned operator 0 = \\hat{D}_c - A^{-1} D_c\n");
+        printfQuda("Checking Deo of preconditioned operator 0 = \\hat{D}_c - A^{-1} D_c\n");
       static_cast<DiracCoarse *>(diracCoarseResidual)->Dslash(r_coarse->Even(), tmp_coarse->Odd(), QUDA_EVEN_PARITY);
       static_cast<DiracCoarse *>(diracCoarseResidual)->CloverInv(x_coarse->Even(), r_coarse->Even(), QUDA_EVEN_PARITY);
       static_cast<DiracCoarsePC *>(diracCoarseSmoother)->Dslash(r_coarse->Even(), tmp_coarse->Odd(), QUDA_EVEN_PARITY);
@@ -992,34 +1031,36 @@ namespace quda
   // supports separate reading or single file read
   void MG::loadVectors(std::vector<ColorSpinorField *> &B)
   {
-    profile_global.TPSTOP(QUDA_PROFILE_INIT);
+    bool is_running = profile_global.isRunning(QUDA_PROFILE_INIT);
+    if (is_running) profile_global.TPSTOP(QUDA_PROFILE_INIT);
     profile_global.TPSTART(QUDA_PROFILE_IO);
     pushLevel(param.level);
-    std::string vec_infile(param.mg_global.vec_infile);
+    std::string vec_infile(param.mg_global.vec_infile[param.level]);
     vec_infile += "_level_";
     vec_infile += std::to_string(param.level);
     vec_infile += "_nvec_";
     vec_infile += std::to_string(param.mg_global.n_vec[param.level]);
-    eig_solve->loadVectors(B, vec_infile);
+    EigenSolver::loadVectors(B, vec_infile);
     popLevel(param.level);
     profile_global.TPSTOP(QUDA_PROFILE_IO);
-    profile_global.TPSTART(QUDA_PROFILE_INIT);
+    if (is_running) profile_global.TPSTART(QUDA_PROFILE_INIT);
   }
 
   void MG::saveVectors(const std::vector<ColorSpinorField *> &B) const
   {
-    profile_global.TPSTOP(QUDA_PROFILE_INIT);
+    bool is_running = profile_global.isRunning(QUDA_PROFILE_INIT);
+    if (is_running) profile_global.TPSTOP(QUDA_PROFILE_INIT);
     profile_global.TPSTART(QUDA_PROFILE_IO);
     pushLevel(param.level);
-    std::string vec_outfile(param.mg_global.vec_outfile);
+    std::string vec_outfile(param.mg_global.vec_outfile[param.level]);
     vec_outfile += "_level_";
     vec_outfile += std::to_string(param.level);
     vec_outfile += "_nvec_";
     vec_outfile += std::to_string(param.mg_global.n_vec[param.level]);
-    eig_solve->saveVectors(B, vec_outfile);
+    EigenSolver::saveVectors(B, vec_outfile);
     popLevel(param.level);
     profile_global.TPSTOP(QUDA_PROFILE_IO);
-    profile_global.TPSTART(QUDA_PROFILE_INIT);
+    if (is_running) profile_global.TPSTART(QUDA_PROFILE_INIT);
   }
 
   void MG::dumpNullVectors() const
@@ -1209,7 +1250,7 @@ namespace quda
       diracSmootherSloppy->setCommDim(commDim);
     }
 
-    if (param.mg_global.vec_store == QUDA_BOOLEAN_YES) { // conditional store of null vectors
+    if (param.mg_global.vec_store[param.level] == QUDA_BOOLEAN_YES) { // conditional store of null vectors
       saveVectors(B);
     }
 
@@ -1400,13 +1441,12 @@ namespace quda
     pushLevel(param.level);
 
     // Extract eigensolver params
-    int nEv = param.mg_global.eig_param[param.level]->nEv;
-    int nKr = param.mg_global.eig_param[param.level]->nKr;
+    int nConv = param.mg_global.eig_param[param.level]->nConv;
     bool dagger = param.mg_global.eig_param[param.level]->use_dagger;
     bool normop = param.mg_global.eig_param[param.level]->use_norm_op;
 
     // Dummy array to keep the eigensolver happy.
-    std::vector<Complex> evals(nEv, 0.0);
+    std::vector<Complex> evals(nConv, 0.0);
 
     std::vector<ColorSpinorField *> B_evecs;
     ColorSpinorParam csParam(*param.B[0]);
@@ -1415,7 +1455,7 @@ namespace quda
     // This is the vector precision used by matResidual
     csParam.setPrecision(param.mg_global.invert_param->cuda_prec_sloppy, QUDA_INVALID_PRECISION, true);
 
-    for (int i = 0; i < nKr; i++) B_evecs.push_back(ColorSpinorField::Create(csParam));
+    for (int i = 0; i < nConv; i++) B_evecs.push_back(ColorSpinorField::Create(csParam));
 
     // before entering the eigen solver, lets free the B vectors to save some memory
     ColorSpinorParam bParam(*param.B[0]);
@@ -1458,7 +1498,7 @@ namespace quda
     for (auto b : B_evecs) { delete b; }
 
     // only save if outfile is defined
-    if (strcmp(param.mg_global.vec_outfile, "") != 0) { saveVectors(param.B); }
+    if (strcmp(param.mg_global.vec_outfile[param.level], "") != 0) { saveVectors(param.B); }
 
     popLevel(param.level);
   }

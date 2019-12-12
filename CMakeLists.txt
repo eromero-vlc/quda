@@ -104,7 +104,8 @@ set(QUDA_DIRAC_DOMAIN_WALL ON CACHE BOOL "build domain wall Dirac operators")
 set(QUDA_DIRAC_STAGGERED ON CACHE BOOL "build staggered Dirac operators")
 set(QUDA_DIRAC_TWISTED_MASS ON CACHE BOOL "build twisted mass Dirac operators")
 set(QUDA_DIRAC_TWISTED_CLOVER ON CACHE BOOL "build twisted clover Dirac operators")
-set(QUDA_DIRAC_NDEG_TWISTED_MASS OFF CACHE BOOL "build non-degenerate twisted mass Dirac operators")
+set(QUDA_DIRAC_CLOVER_HASENBUSCH ON CACHE BOOL "build clover Hasenbusch twist operators")
+set(QUDA_DIRAC_NDEG_TWISTED_MASS ON CACHE BOOL "build non-degenerate twisted mass Dirac operators")
 set(QUDA_LINK_ASQTAD OFF CACHE BOOL "build code for computing asqtad fat links")
 set(QUDA_LINK_HISQ OFF CACHE BOOL "build code for computing hisq fat links")
 set(QUDA_FORCE_GAUGE OFF CACHE BOOL "build code for (1-loop Symanzik) gauge force")
@@ -163,7 +164,6 @@ else()
 endif()
 set(QUDA_BUILD_SHAREDLIB ${DEFSHARED} CACHE BOOL "build quda as a shared lib")
 set(QUDA_PROPAGATE_CXX_FLAGS ON CACHE BOOL "propagate CXX_FLAGS to CUDA host compiler (for cmake >= 3.8)")
-set(QUDA_LEGACY_DSLASH OFF CACHE BOOL "enable legacy dslash kernels?")
 set(QUDA_TEX ON CACHE BOOL "enable texture reads?")
 set(QUDA_NVML OFF CACHE BOOL "use NVML to report CUDA graphics driver version")
 set(QUDA_NUMA_NVML OFF CACHE BOOL "experimental use of NVML to set numa affinity")
@@ -180,9 +180,13 @@ set(QUDA_CTEST_SEP_DSLASH_POLICIES
     OFF
     CACHE BOOL "Test Dslash policies separately in ctest instead of only autotuning them.")
 
+set(QUDA_REDUCE_SINGLE_WARP OFF CACHE BOOL "enable single warp per CTA for reduction kernels to reduce compile time")
+
 set(QUDA_OPENMP OFF CACHE BOOL "enable OpenMP")
-set(QUDA_CXX_STANDARD 11 CACHE STRING "set the CXX Standard (11 or 14)")
-set_property(CACHE QUDA_CXX_STANDARD PROPERTY STRINGS 11 14)
+set(QUDA_CXX_STANDARD 14 CACHE STRING "set the CXX Standard (14 or 17)")
+set_property(CACHE QUDA_CXX_STANDARD PROPERTY STRINGS 14 17)
+
+option(QUDA_BACKWARDS "Enable stacktrace generation using backwards-cpp")
 
 # NVTX options
 set(QUDA_MPI_NVTX OFF CACHE BOOL "add nvtx markup to MPI API calls for the visual profiler")
@@ -197,15 +201,15 @@ set(QUDA_DOWNLOAD_EIGEN ON CACHE BOOL "Download Eigen")
 set(QUDA_DOWNLOAD_USQCD OFF CACHE BOOL "Download USQCD software as requested by QUDA_QMP / QUDA_QIO")
 set(QUDA_DOWNLOAD_ARPACK OFF CACHE BOOL "Download ARPACK-NG software as requested by QUDA_ARPACK")
 
+
 option(QUDA_GENERATE_DOXYGEN "generate doxygen documentation")
 
 set(QUDA_JITIFY OFF CACHE BOOL "build QUDA using Jitify")
 
 mark_as_advanced(QUDA_BUILD_ALL_TESTS)
-mark_as_advanced(QUDA_BUILD_SHAREDLIB)
 mark_as_advanced(QUDA_PROPAGATE_CXX_FLAGS)
-mark_as_advanced(QUDA_LEGACY_DSLASH)
 mark_as_advanced(QUDA_TEX)
+mark_as_advanced(QUDA_REDUCE_SINGLE_WARP)
 mark_as_advanced(QUDA_NVML)
 mark_as_advanced(QUDA_NUMA_NVML)
 mark_as_advanced(QUDA_VERBOSE_BUILD)
@@ -216,6 +220,8 @@ mark_as_advanced(QUDA_CTEST_SEP_DSLASH_POLICIES)
 mark_as_advanced(QUDA_CTEST_LAUNCH)
 mark_as_advanced(QUDA_CTEST_LAUNCH_ARGS)
 mark_as_advanced(QUDA_OPENMP)
+
+mark_as_advanced(QUDA_BACKWARDS)
 
 mark_as_advanced(QUDA_MPI_NVTX)
 mark_as_advanced(QUDA_INTERFACE_NVTX)
@@ -414,7 +420,10 @@ if(QUDA_DOWNLOAD_USQCD)
 endif()
 
 if(QUDA_QMP)
-  if(QUDA_DOWNLOAD_USQCD)
+  find_library (QMP_FOUND qmp HINTS ${QUDA_QMPHOME}/lib NO_DEFAULT_PATH)
+  mark_as_advanced(QMP_FOUND)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${QMP_FOUND})
+  if(QUDA_DOWNLOAD_USQCD AND NOT QMP_FOUND)
     ExternalProject_Add(QMP
                         GIT_REPOSITORY https://github.com/usqcd-software/qmp.git
                         GIT_TAG qmp2-5-1
@@ -434,7 +443,8 @@ if(QUDA_QMP)
                         )
 
     ExternalProject_Get_Property(QMP INSTALL_DIR)
-    set(QUDA_QMPHOME ${INSTALL_DIR})
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${INSTALL_DIR})
+    set(QUDA_QMPHOME ${INSTALL_DIR} CACHE PATH "path to QMP" FORCE)
     set(QUDA_QMP_LDFLAGS
         "-L${QUDA_QMPHOME}/lib"
         CACHE STRING "LDFLAGS for QMP - should be derived from qmp-config --ldflags")
@@ -475,7 +485,10 @@ if(QUDA_QIO)
   if(NOT QUDA_QMP)
     message(FATAL_ERROR "Use of QIO (via QUDA_QIO=ON) requires QMP. Please set QUDA_QMP=ON.")
   endif()
-  if(QUDA_DOWNLOAD_USQCD)
+  find_library (QIO_FOUND qio HINTS ${QUDA_QIOHOME}/lib NO_DEFAULT_PATH)
+  mark_as_advanced(QIO_FOUND)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${QIO_FOUND})
+  if(QUDA_DOWNLOAD_USQCD AND NOT QIO_FOUND)
     ExternalProject_Add(QIO
                         GIT_REPOSITORY https://github.com/usqcd-software/qio.git
                         GIT_TAG qio2-5-0
@@ -495,9 +508,9 @@ if(QUDA_QIO)
                         # LOG_OUTPUT_ON_FAILURE ON
                         )
     ExternalProject_Get_Property(QIO INSTALL_DIR)
-    set(QUDA_QIOHOME ${INSTALL_DIR})
-    set(QUDA_LIME_HOME ${INSTALL_DIR})
-
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${INSTALL_DIR})
+    set(QUDA_QIOHOME ${INSTALL_DIR} CACHE PATH "path to QIO" FORCE)
+    set(QUDA_LIMEHOME ${INSTALL_DIR} CACHE PATH "path to LIME" FORCE)
     ExternalProject_Add_Step(QIO reconf
                              COMMAND ${AUTORECONF_EXE} -fi
                              WORKING_DIRECTORY <SOURCE_DIR>
@@ -669,6 +682,10 @@ endif(QUDA_PRIMME)
 # set which precisions to enable
 add_definitions(-DQUDA_PRECISION=${QUDA_PRECISION})
 
+if(QUDA_REDUCE_SINGLE_WARP)
+add_definitions(-DQUDA_REDUCE_SINGLE_WARP)
+endif()
+
 # set which precisions to enable
 add_definitions(-DQUDA_RECONSTRUCT=${QUDA_RECONSTRUCT})
 
@@ -679,7 +696,6 @@ endif()
 if(QUDA_MULTIGRID)
   add_definitions(-DCUBLAS_LIB)
   add_definitions(-DGPU_MULTIGRID)
-  list(APPEND QUDA_LIBS ${CUDA_cublas_LIBRARY})
 endif(QUDA_MULTIGRID)
 
 if(QUDA_BLOCKSOLVER)
@@ -689,9 +705,6 @@ endif()
 if(QUDA_JITIFY)
   add_definitions(-DJITIFY)
   find_package(LibDL)
-  # find_library(LibDL_Libraries nvToolsExt ${CUDA_TOOLKIT_ROOT_DIR}/lib/)
-  list(APPEND QUDA_LIBS ${CUDA_nvrtc_LIBRARY})
-  list(APPEND QUDA_LIBS ${LIBDL_LIBRARIES})
 endif()
 
 if(QUDA_USE_EIGEN)
@@ -723,8 +736,13 @@ if(QUDA_DIRAC_TWISTED_CLOVER)
                   -DGPU_GAUGE_TOOLS)
 endif(QUDA_DIRAC_TWISTED_CLOVER)
 
+if(QUDA_DIRAC_CLOVER_HASENBUSCH)
+  add_definitions(-DGPU_CLOVER_HASENBUSCH_TWIST -DGPU_TWISTED_CLOVER_DIRAC -DGPU_CLOVER_DIRAC -DGPU_WILSON_DIRAC
+                  -DGPU_GAUGE_TOOLS)
+endif(QUDA_DIRAC_CLOVER_HASENBUSCH)
+
 if(QUDA_DIRAC_NDEG_TWISTED_MASS)
-  add_definitions(-DGPU_NDEG_TWISTED_MASS_DIRAC -DGPU_TWISTED_MASS_DIRAC -DGPU_WILSON_DIRAC)
+  add_definitions(-DGPU_NDEG_TWISTED_MASS_DIRAC)
 endif(QUDA_DIRAC_NDEG_TWISTED_MASS)
 
 if(QUDA_LINK_ASQTAD)
@@ -772,10 +790,6 @@ if(QUDA_NVTX)
     list(APPEND QUDA_LIBS ${CUDA_nvToolsExt_LIBRARY})
   endif(NVTX3)
 endif(QUDA_NVTX)
-
-if(QUDA_LEGACY_DSLASH)
-  add_definitions(-DUSE_LEGACY_DSLASH)
-endif(QUDA_LEGACY_DSLASH)
 
 if(QUDA_INTERFACE_QDP)
   add_definitions(-DBUILD_QDP_INTERFACE)
@@ -836,11 +850,11 @@ mark_as_advanced(CMAKE_CUDA_HOST_COMPILER)
 
 set(QUDA_NVCC_FLAGS "-ftz=true -prec-div=false -prec-sqrt=false")
 set(CMAKE_CUDA_FLAGS
-    "-Wno-deprecated-gpu-targets -arch=${QUDA_GPU_ARCH}"
+    "-Wno-deprecated-gpu-targets -arch=${QUDA_GPU_ARCH} --expt-relaxed-constexpr"
     CACHE STRING "Flags used by the CUDA compiler" FORCE)
 if(QUDA_VERBOSE_BUILD)
   set(CMAKE_CUDA_FLAGS
-      "-Wno-deprecated-gpu-targets -arch=${QUDA_GPU_ARCH} --ptxas-options=-v"
+      "-Wno-deprecated-gpu-targets -arch=${QUDA_GPU_ARCH} --expt-relaxed-constexpr --ptxas-options=-v"
       CACHE STRING "Flags used by the CUDA compiler" FORCE)
 endif(QUDA_VERBOSE_BUILD)
 
@@ -942,6 +956,24 @@ mark_as_advanced(CMAKE_F_FLAGS)
 
 set(BUILDNAME ${HASH})
 include(CTest)
+
+
+
+if(QUDA_BACKWARDS)
+  include(FetchContent)
+  FetchContent_Declare(
+      backward-cpp
+      GIT_REPOSITORY https://github.com/lattice/backward-cpp.git
+      GIT_TAG v1.4
+      GIT_SHALLOW ON
+  )
+  FetchContent_GetProperties(backward-cpp)
+  if(NOT backward-cpp_POPULATED)
+    FetchContent_Populate(backward-cpp)
+  endif()
+  include(${backward-cpp_SOURCE_DIR}/BackwardConfig.cmake)
+endif()
+
 # add tests and quda library
 add_subdirectory(lib)
 add_subdirectory(tests)

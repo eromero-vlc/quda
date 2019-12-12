@@ -322,7 +322,7 @@ namespace quda
 
       // Compute eigenvalues and residuals
       std::vector<double> residua(primme.initSize);
-      eigensolver->computeEvals(eigensolver->mat, kSpace, evals_out, residua, primme.initSize);
+      eigensolver->computeEvals(eigensolver->mat, kSpace, evals_out, primme.initSize);
       if (getVerbosity() >= QUDA_SUMMARIZE) {
         for (int i = 0; i < eig_param->nEv; i++) {
           printfQuda("EigValue[%04d]: (%+.16e, %+.16e) residual %.16e\n", i, evals_out[i].real(), evals_out[i].imag(),

@@ -149,6 +149,9 @@ void printQudaEigParam(QudaEigParam *param) {
   P(poly_deg, 0);
   P(a_min, 0.0);
   P(a_max, 0.0);
+  P(preserve_deflation, QUDA_BOOLEAN_NO);
+  P(preserve_deflation_space, 0);
+  P(preserve_evals, QUDA_BOOLEAN_YES);
   P(use_dagger, QUDA_BOOLEAN_NO);
   P(use_norm_op, QUDA_BOOLEAN_NO);
   P(compute_svd, QUDA_BOOLEAN_NO);
@@ -157,6 +160,7 @@ void printQudaEigParam(QudaEigParam *param) {
   P(nEv, 0);
   P(nKr, 0);
   P(nConv, 0);
+  P(batched_rotate, 0);
   P(tol, 0.0);
   P(check_interval, 0);
   P(max_restarts, 0);
@@ -171,6 +175,8 @@ void printQudaEigParam(QudaEigParam *param) {
   P(poly_deg, INVALID_INT);
   P(a_min, INVALID_DOUBLE);
   P(a_max, INVALID_DOUBLE);
+  P(preserve_deflation, QUDA_BOOLEAN_INVALID);
+  P(preserve_evals, QUDA_BOOLEAN_INVALID);
   P(use_dagger, QUDA_BOOLEAN_INVALID);
   P(use_norm_op, QUDA_BOOLEAN_INVALID);
   P(compute_svd, QUDA_BOOLEAN_INVALID);
@@ -178,6 +184,7 @@ void printQudaEigParam(QudaEigParam *param) {
   P(nEv, INVALID_INT);
   P(nKr, INVALID_INT);
   P(nConv, INVALID_INT);
+  P(batched_rotate, INVALID_INT);
   P(tol, INVALID_DOUBLE);
   P(check_interval, INVALID_INT);
   P(max_restarts, INVALID_INT);
@@ -222,7 +229,8 @@ void printQudaCloverParam(QudaInvertParam *param)
 #endif
 
 #ifndef INIT_PARAM
-  if (param->dslash_type == QUDA_CLOVER_WILSON_DSLASH || param->dslash_type == QUDA_TWISTED_CLOVER_DSLASH) {
+  if (param->dslash_type == QUDA_CLOVER_WILSON_DSLASH || param->dslash_type == QUDA_TWISTED_CLOVER_DSLASH
+      || param->dslash_type == QUDA_CLOVER_HASENBUSCH_TWIST_DSLASH) {
 #endif
     P(clover_cpu_prec, QUDA_INVALID_PRECISION);
     P(clover_cuda_prec, QUDA_INVALID_PRECISION);
@@ -477,6 +485,14 @@ void printQudaInvertParam(QudaInvertParam *param) {
   }
 #endif
 
+#if defined(INIT_PARAM)
+  P(eig_param, 0);
+#elif defined(CHECK_PARAM)
+  if (param->eig_param && param->inv_type_precondition != QUDA_INVALID_INVERTER) {
+    errorQuda("At present cannot combine deflation with Schwarz preconditioner");
+  }
+#endif
+
 #ifdef INIT_PARAM
   P(use_init_guess, QUDA_USE_INIT_GUESS_NO); //set the default to no
   P(omega, 1.0); // set default to no relaxation
@@ -711,7 +727,6 @@ void printQudaMultigridParam(QudaMultigridParam *param) {
     if (i<n_level-1) {
       for (int j=0; j<4; j++) P(geo_block_size[i][j], INVALID_INT);
       P(spin_block_size[i], INVALID_INT);
-      P(n_vec[i], INVALID_INT);
 #ifdef INIT_PARAM
       P(precision_null[i], QUDA_SINGLE_PRECISION);
 #else
@@ -722,6 +737,16 @@ void printQudaMultigridParam(QudaMultigridParam *param) {
       P(nu_post[i], INVALID_INT);
       P(coarse_grid_solution_type[i], QUDA_INVALID_SOLUTION);
     }
+
+#ifdef INIT_PARAM
+    if (i<QUDA_MAX_MG_LEVEL) {
+          P(n_vec[i], INVALID_INT);
+    }
+#else
+    if (i<n_level-1) {
+      P(n_vec[i], INVALID_INT);
+    }
+#endif
 
 #ifdef INIT_PARAM
     P(mu_factor[i], 1);
@@ -772,17 +797,21 @@ void printQudaMultigridParam(QudaMultigridParam *param) {
 
 #ifdef INIT_PARAM
   P(coarse_guess, QUDA_BOOLEAN_NO);
+  P(preserve_deflation, QUDA_BOOLEAN_NO);
 #else
   P(coarse_guess, QUDA_BOOLEAN_INVALID);
+  P(preserve_deflation, QUDA_BOOLEAN_INVALID);
 #endif
 
+  for (int i = 0; i < n_level - 1; i++) {
 #ifdef INIT_PARAM
-  P(vec_load, QUDA_BOOLEAN_INVALID);
-  P(vec_store, QUDA_BOOLEAN_INVALID);
+    P(vec_load[i], QUDA_BOOLEAN_INVALID);
+    P(vec_store[i], QUDA_BOOLEAN_INVALID);
 #else
-  P(vec_load, QUDA_BOOLEAN_NO);
-  P(vec_store, QUDA_BOOLEAN_NO);
+    P(vec_load[i], QUDA_BOOLEAN_NO);
+    P(vec_store[i], QUDA_BOOLEAN_NO);
 #endif
+  }
 
 #ifdef INIT_PARAM
   P(gflops, 0.0);

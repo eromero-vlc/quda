@@ -7,6 +7,7 @@
 
 #include <quda_internal.h>
 #include <eigensolve_quda.h>
+#include <quda_primme_interface.h>
 #include <qio_field.h>
 #include <color_spinor_field.h>
 #include <blas_quda.h>
@@ -105,6 +106,12 @@ namespace quda
       if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Creating TR Lanczos eigensolver\n");
       eig_solver = new TRLM(eig_param, mat, profile);
       break;
+#ifdef PRIMME_LIB
+    case QUDA_EIG_PRIMME:
+      if (getVerbosity() >= QUDA_SUMMARIZE) printfQuda("Creating PRIMME eigensolver\n");
+      eig_solver = new PRIMME(eig_param, mat, profile);
+      break;
+#endif
     default: errorQuda("Invalid eig solver type");
     }
     return eig_solver;

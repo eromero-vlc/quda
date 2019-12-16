@@ -189,6 +189,7 @@ void setInvertParam(QudaInvertParam &inv_param)
 
   inv_param.matpc_type = matpc_type;
   inv_param.inv_type = QUDA_GCR_INVERTER;
+  inv_param.inv_type = inv_type;
   inv_param.verbosity = verbosity;
   inv_param.inv_type_precondition = precon_type;
   inv_param.tol = tol;

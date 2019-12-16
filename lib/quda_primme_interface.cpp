@@ -10,6 +10,13 @@
 #include <quda_primme_interface.h>
 #include <color_spinor_field.h>
 #include <blas_quda.h>
+#include <invert_quda.h>
+#include <timer.h>
+
+static quda::TimeProfile profileInvert("invertQuda");
+namespace quda {
+  void createDirac(Dirac *&d, Dirac *&dSloppy, Dirac *&dPre, QudaInvertParam &param, const bool pc_solve);
+}
 
 // PRIMME INTERFACE ROUTINES
 //--------------------------------------------------------------------------
@@ -127,7 +134,7 @@ namespace quda
     }
 
     // Auxiliary function for the matvec
-    template<bool use_inv> struct primmeMatvec {
+    template<typename evecs_type, bool use_inv> struct primmeMatvec {
       static void fun(void *x0, PRIMME_INT *ldx, void *y0, PRIMME_INT *ldy,
           int *blockSize, primme_params *primme, int *ierr)
       {
@@ -137,33 +144,50 @@ namespace quda
         // Quick return
         if (*blockSize <= 0) {*ierr = 0; return; }
 
-        // Wrap the raw pointers into ColorSpinorField
-        ColorSpinorParam *invParam = (ColorSpinorParam *)primme->commInfo;
-        invParam->nVec = *blockSize;
-        invParam->create = QUDA_REFERENCE_FIELD_CREATE;
-        invParam->v = x0;
-        ColorSpinorField *x = ColorSpinorField::Create(*invParam);
-        invParam->v = y0;
-        ColorSpinorField *y = ColorSpinorField::Create(*invParam);
-
-        // Initialize y, for instance y = x
-        blas::copy(*y, *x);
-
         PRIMME *eigensolver = (PRIMME*)primme->matrix; 
-        if (!use_inv) {
-          // Do y = Dirac * x
-          eigensolver->matVec(eigensolver->mat, *y, *x);
-        } else {
-          // Do y = Dirac^{-1} * x
-          invertQuda(y0, x0, eigensolver->get_eig_param()->invert_param);
+        Solver *solve = (Solver*)primme->preconditioner;
+
+        for (int i=0; i<*blockSize; i++) {
+          // Wrap the raw pointers into ColorSpinorField
+          ColorSpinorParam *invParam = (ColorSpinorParam *)primme->commInfo;
+          invParam->nVec = 1;
+          invParam->create = QUDA_REFERENCE_FIELD_CREATE;
+          invParam->v = (evecs_type*)x0 + *ldx*i;
+          ColorSpinorField *x = ColorSpinorField::Create(*invParam);
+          invParam->v = (evecs_type*)y0 + *ldy*i;
+          ColorSpinorField *y = ColorSpinorField::Create(*invParam);
+
+          // Initialize y, for instance y = x
+          blas::zero(*y);
+
+          if (!use_inv) {
+            // Do y = Dirac * x
+            eigensolver->matVec(eigensolver->mat, *y, *x);
+          } else {
+            // Do y = Dirac^{-1} * x
+            (*solve)(*y, *x);
+
+            // Check residual
+            //ColorSpinorParam *invParam = (ColorSpinorParam *)primme->commInfo;
+            //invParam->nVec = 1;
+            //invParam->create = QUDA_ZERO_FIELD_CREATE;
+            //invParam->v = NULL;
+            //ColorSpinorField *tmp1 = ColorSpinorField::Create(*invParam);
+            //blas::zero(*tmp1);
+            //eigensolver->matVec(eigensolver->mat, *tmp1, *y);
+            ////MatQuda(tmp1->V(), y0, eigensolver->get_eig_param()->invert_param);
+            //blas::caxpy(-1.0, *x, *tmp1);
+            //printf("norm 2: %g\n", sqrt(blas::norm2(*tmp1)/blas::norm2(*x)));
+            //delete tmp1;
+          }
+
+          // Do y = gamma * y
+          gamma5(*y, *y);
+
+          // Clean up
+          delete x;
+          delete y;
         }
-
-        // Do y = gamma * y
-        gamma5(*y, *y);
-
-        // Clean up
-        delete x;
-        delete y;
 
         // We're good!
         *ierr = 0;
@@ -185,6 +209,9 @@ namespace quda
         eig_param->invert_param->input_location = eig_param->invert_param->output_location = location;
         eig_param->invert_param->tol = eig_param->tol;
         eig_param->invert_param->residual_type = QUDA_L2_RELATIVE_RESIDUAL;
+        eig_param->invert_param->solver_normalization = QUDA_DEFAULT_NORMALIZATION;
+        eig_param->invert_param->mass_normalization = QUDA_NO_NORMALIZATION;
+        eig_param->invert_param->preserve_source = QUDA_PRESERVE_SOURCE_YES;
       }
 
       // Initialize PRIMME configuration
@@ -256,7 +283,7 @@ namespace quda
       primme.numTargetShifts = 1;
 
       // Set operator
-      primme.matrixMatvec = use_inv ? primmeMatvec<true>::fun : primmeMatvec<false>::fun;
+      primme.matrixMatvec = use_inv ? primmeMatvec<evecs_type, true>::fun : primmeMatvec<evecs_type, false>::fun;
       ColorSpinorParam invParam0(invParam);
       primme.commInfo = &invParam0;
       primme.matrix = eigensolver;
@@ -279,6 +306,22 @@ namespace quda
         primme.correctionParams.maxInnerIterations = 160;
         primme.correctionParams.convTest = primme_full_LTolerance;
       }
+
+      // Create invertor
+      Solver *solver = nullptr;
+      Dirac *d = nullptr;
+      Dirac *dSloppy = nullptr;
+      Dirac *dPre = nullptr;
+      if (use_inv) {
+        // create the dirac operator
+        eigensolver->get_eig_param()->invert_param->num_src = 1;
+        quda::createDirac(d, dSloppy, dPre, *eigensolver->get_eig_param()->invert_param, false);
+
+        DiracM m(*d), mSloppy(*dSloppy), mPre(*dPre);
+        SolverParam solverParam(*eigensolver->get_eig_param()->invert_param);
+        solver = Solver::create(solverParam, m, mSloppy, mPre, profileInvert);
+        primme.preconditioner = solver;
+      } 
 
       // Use a fast, but inaccurate orthogonalization. It seems enough for these problems
       primme.orth = primme_orth_implicit_I;
@@ -303,6 +346,13 @@ namespace quda
       int ret = tprimme(evals, evecs_ptr, rnorms, &primme, location);
       checkCudaError();
 
+      if (use_inv) {
+        delete solver;
+        delete d;
+        delete dSloppy;
+        delete dPre;
+      }
+
       if (ret != 0) {
         errorQuda("PRIMME returns the error code %d. Computed %d pairs.", ret, primme.initSize);
       }
@@ -321,14 +371,13 @@ namespace quda
       }
 
       // Compute eigenvalues and residuals
-      std::vector<double> residua(primme.initSize);
       eigensolver->computeEvals(eigensolver->mat, kSpace, evals_out, primme.initSize);
-      if (getVerbosity() >= QUDA_SUMMARIZE) {
-        for (int i = 0; i < eig_param->nEv; i++) {
-          printfQuda("EigValue[%04d]: (%+.16e, %+.16e) residual %.16e\n", i, evals_out[i].real(), evals_out[i].imag(),
-                     residua[i]);
-        }
-      }
+      // if (getVerbosity() >= QUDA_SUMMARIZE) {
+      //   for (int i = 0; i < eig_param->nEv; i++) {
+      //     printfQuda("EigValue[%04d]: (%+.16e, %+.16e) residual %.16e\n", i, evals_out[i].real(), evals_out[i].imag(),
+      //                eigensolver->residua[i]);
+      //   }
+      // }
 
       if (getVerbosity() >= QUDA_SUMMARIZE) {
         printfQuda("PRIMME computed the requested %d vectors in %g restart steps and %g OP*x operations.\n", primme.initSize,
@@ -368,7 +417,7 @@ namespace quda
       }
     }
 
-  } // namespace
+  } // auxiliary namespace
 
   // Solver call
   void PRIMME::operator()(std::vector<ColorSpinorField *> &kSpace, std::vector<Complex> &evals)

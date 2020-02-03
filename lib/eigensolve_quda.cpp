@@ -396,9 +396,11 @@ namespace quda
     std::vector<ColorSpinorField *> temp;
     temp.push_back(ColorSpinorField::Create(csParam));
 
+    // HACK: assume that the user still want the right singular vectors if not using the normal operator
+    const DiracMatrix *mat0 = eig_param->use_norm_op ? &mat : const_cast<const DiracMatrix*>(eig_param->use_dagger ? static_cast<DiracMatrix*>(new DiracMMdag(mat.Expose())) : static_cast<DiracMatrix*>(new DiracMdagM(mat.Expose())));
     for (int i = 0; i < size; i++) {
       // r = A * v_i
-      matVec(mat, *temp[0], *evecs[i]);
+      matVec(*mat0, *temp[0], *evecs[i]);
       // lambda_i = v_i^dag A v_i / (v_i^dag * v_i)
       evals[i] = blas::cDotProduct(*evecs[i], *temp[0]) / sqrt(blas::norm2(*evecs[i]));
       // Measure ||lambda_i*v_i - A*v_i||
@@ -410,6 +412,7 @@ namespace quda
         printfQuda("Eval[%04d] = (%+.16e,%+.16e) residual = %+.16e\n", i, evals[i].real(), evals[i].imag(), residua[i]);
     }
     delete temp[0];
+    if (!eig_param->use_norm_op) delete mat0;
   }
 
   // Deflate vec, place result in vec_defl

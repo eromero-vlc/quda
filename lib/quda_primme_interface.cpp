@@ -309,17 +309,19 @@ namespace quda
 
       // Create invertor
       Solver *solver = nullptr;
-      Dirac *d = nullptr;
-      Dirac *dSloppy = nullptr;
-      Dirac *dPre = nullptr;
+      Dirac *d = nullptr, *dSloppy = nullptr, *dPre = nullptr;
+      DiracM *m = nullptr, *mSloppy = nullptr, *mPre = nullptr;
+      SolverParam *solverParam = nullptr;
       if (use_inv) {
         // create the dirac operator
         eigensolver->get_eig_param()->invert_param->num_src = 1;
         quda::createDirac(d, dSloppy, dPre, *eigensolver->get_eig_param()->invert_param, false);
 
-        DiracM m(*d), mSloppy(*dSloppy), mPre(*dPre);
-        SolverParam solverParam(*eigensolver->get_eig_param()->invert_param);
-        solver = Solver::create(solverParam, m, mSloppy, mPre, profileInvert);
+        m = new DiracM(*d);
+        mSloppy = new DiracM(*dSloppy);
+        mPre = new DiracM(*dPre);
+        solverParam = new SolverParam(*eigensolver->get_eig_param()->invert_param);
+        solver = Solver::create(*solverParam, *m, *mSloppy, *mPre, profileInvert);
         primme.preconditioner = solver;
       } 
 
@@ -348,6 +350,10 @@ namespace quda
 
       if (use_inv) {
         delete solver;
+        delete solverParam;
+        delete m;
+        delete mSloppy;
+        delete mPre;
         delete d;
         delete dSloppy;
         delete dPre;
@@ -368,6 +374,13 @@ namespace quda
       kSpace.resize(primme.initSize);
       for (int i=0; i<primme.initSize; i++) {
         copy_column(*kSpace[i], 0, *evecs, i);
+      }
+
+      // PRIMME returns the left singular vectors if use_inv. Fix them here!
+      if (use_inv && !eig_param->use_dagger) {
+        for (int i=0; i<primme.initSize; i++) {
+          gamma5(*kSpace[i], *kSpace[i]);
+        }
       }
 
       // Compute eigenvalues and residuals
